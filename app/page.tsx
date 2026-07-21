@@ -8,16 +8,31 @@ import {
   useRef,
   useState,
 } from "react";
-import { useTasks, todayStr } from "@/lib/store";
+import { useTasks, useSettings, todayStr, tomorrowStr } from "@/lib/store";
 import { useSpeech } from "@/lib/useSpeech";
 import {
+  buildTimeline,
+  fmtTime,
+  toMin,
+  LUNCH_START,
+  LUNCH_MIN,
+  type Timeline,
+  type BusyBlock,
+  type WorkdayOptions,
+} from "@/lib/schedule";
+import { downloadIcs } from "@/lib/ics";
+import {
   PRIORITY_META,
-  WORKDAY_MINUTES,
   type Task,
   type Priority,
+  type ParsedTask,
 } from "@/lib/types";
 
 type Tab = "today" | "week" | "inbox";
+
+// Приклад швидкого старту на вітальному екрані — збігається з демо-сценарієм.
+const EXAMPLE_DUMP =
+  "Підготувати квартальний звіт до пʼятниці, дзвінок із клієнтом о 15:00, сходити в спортзал, відповісти на пошту";
 
 interface WeekDay {
   iso: string;
@@ -118,6 +133,17 @@ const Close = () => (
       stroke="currentColor"
       strokeWidth="2"
       strokeLinecap="round"
+    />
+  </svg>
+);
+const Gear = () => (
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+    <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+    <path
+      d="M12 2l1.6 2.6 3-.6.4 3 2.6 1.6-1.4 2.7 1.4 2.7-2.6 1.6-.4 3-3-.6L12 22l-1.6-2.6-3 .6-.4-3L4.4 15.4 5.8 12.7 4.4 10l2.6-1.6.4-3 3 .6L12 2z"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
     />
   </svg>
 );
@@ -235,6 +261,7 @@ export default function Home() {
     scheduleToday,
     moveToInbox,
     moveToDate,
+    updateTask,
     removeTask,
     removeMany,
     restoreTask,
@@ -246,7 +273,16 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [captureOpen, setCaptureOpen] = useState(false);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [openSwipeId, setOpenSwipeId] = useState<string | null>(null);
+  const { settings, update: updateSettings } = useSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Перепланування з обмеженнями (сесійне — не зберігаємо в localStorage).
+  const [busyBlocks, setBusyBlocks] = useState<BusyBlock[]>([]);
+  const [replanOpen, setReplanOpen] = useState(false);
+  const [replanText, setReplanText] = useState("");
+  const [replanLoading, setReplanLoading] = useState(false);
+  const [replanError, setReplanError] = useState<string | null>(null);
   const [toast, setToast] = useState<{
     message: string;
     action?: { label: string; fn: () => void };
@@ -283,6 +319,10 @@ export default function Home() {
     () => sortTasks(tasks.filter((t) => t.status === "inbox")),
     [tasks]
   );
+  const detailTask = useMemo(
+    () => tasks.find((t) => t.id === detailId) ?? null,
+    [tasks, detailId]
+  );
 
   const week = useMemo(() => buildWeek(), []);
   const tasksByDay = useMemo(() => {
@@ -297,12 +337,30 @@ export default function Home() {
     return map;
   }, [tasks, week]);
 
-  // Реалістичність плану
-  const plannedMinutes = todayActive.reduce(
-    (sum, t) => sum + (t.estimateMinutes ?? 0),
-    0
+  // Налаштування робочого дня → опції планувальника (спільні для Today і Week).
+  const workOpts: WorkdayOptions = useMemo(
+    () => ({ dayStart: toMin(settings.dayStart), dayEnd: toMin(settings.dayEnd) }),
+    [settings.dayStart, settings.dayEnd]
   );
-  const overloaded = plannedMinutes > WORKDAY_MINUTES;
+  // Скільки реально годин у робочому дні (мінус обід, якщо в межах) — для банера.
+  const workLabel = useMemo(() => {
+    const ds = toMin(settings.dayStart);
+    const de = Math.max(toMin(settings.dayEnd), ds + 30);
+    const lunch = Math.max(
+      0,
+      Math.min(LUNCH_START + LUNCH_MIN, de) - Math.max(LUNCH_START, ds)
+    );
+    const cap = Math.max(0, de - ds - lunch);
+    return { minutes: cap, range: `${settings.dayStart}–${settings.dayEnd}` };
+  }, [settings.dayStart, settings.dayEnd]);
+
+  // Таймлайн дня «за енергією» + реалістичність (клієнтський, без AI).
+  const timeline = useMemo(
+    () => buildTimeline(todayActive, busyBlocks, workOpts),
+    [todayActive, busyBlocks, workOpts]
+  );
+  const plannedMinutes = timeline.plannedMinutes;
+  const overloaded = timeline.overflow.length > 0;
 
   // Нагадування про невиконані пріоритетні (P1)
   const unfinishedP1 = todayActive.filter((t) => t.priority === 1);
@@ -333,6 +391,11 @@ export default function Home() {
   async function handleParse() {
     const text = draft.trim();
     if (!text || loading) return;
+    // Гард від «сміттєвого»/надто короткого вводу — щоб не смикати AI даремно.
+    if (text.replace(/\s+/g, "").length < 3) {
+      setError("Напиши трохи більше — хоча б одну задачу.");
+      return;
+    }
     if (speech.listening) speech.stop();
     setLoading(true);
     setError(null);
@@ -344,19 +407,48 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Помилка сервера");
-      const parsed = data.tasks ?? [];
+      const parsed: ParsedTask[] = data.tasks ?? [];
       if (parsed.length === 0) {
         setError("Не вдалося виділити задачі. Спробуй сформулювати конкретніше.");
         return;
       }
-      const created = addParsed(parsed);
+
+      // Дедуплікація: нормалізуємо назву й відкидаємо збіги з наявними
+      // задачами та повтори всередині самої пачки. Рятує демо від дублів,
+      // якщо той самий дамп розібрати двічі або AI поверне однакові пункти.
+      const norm = (s: string) =>
+        s
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .replace(/[.,!?;:—–-]+$/u, "")
+          .trim();
+      const existing = new Set(tasks.map((t) => norm(t.title)));
+      const seen = new Set<string>();
+      const fresh: ParsedTask[] = [];
+      let dupes = 0;
+      for (const p of parsed) {
+        const key = norm(p.title);
+        if (!key || existing.has(key) || seen.has(key)) {
+          dupes++;
+          continue;
+        }
+        seen.add(key);
+        fresh.push(p);
+      }
+      if (fresh.length === 0) {
+        setError(
+          `Ці задачі вже є у списку (${dupes} ${plural(dupes, "дублікат", "дублікати", "дублікатів")}). Додай щось нове.`
+        );
+        return;
+      }
+
+      const created = addParsed(fresh);
       const n = created.length;
       const ids = created.map((c) => c.id);
-      type P = { scheduleToday: boolean; dueDate: string | null };
-      const landedToday = (parsed as P[]).filter(
+      const landedToday = fresh.filter(
         (p) => p.scheduleToday || p.dueDate === today
       ).length;
-      const hasFuture = (parsed as P[]).some(
+      const hasFuture = fresh.some(
         (p) => !p.scheduleToday && p.dueDate && p.dueDate > today
       );
       setDraft("");
@@ -364,7 +456,10 @@ export default function Home() {
       setToast({
         message:
           `Додано ${n} ${plural(n, "задачу", "задачі", "задач")}` +
-          (landedToday ? ` · ${landedToday} на сьогодні` : ""),
+          (landedToday ? ` · ${landedToday} на сьогодні` : "") +
+          (dupes > 0
+            ? ` · пропущено ${dupes} ${plural(dupes, "дублікат", "дублікати", "дублікатів")}`
+            : ""),
         action: { label: "Скасувати", fn: () => removeMany(ids) },
       });
       setTab(landedToday > 0 ? "today" : hasFuture ? "week" : "inbox");
@@ -373,6 +468,57 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleMoveTomorrow(id: string) {
+    moveToDate(id, tomorrowStr());
+    setToast({ message: "Перенесено на завтра." });
+  }
+
+  async function handleReplan() {
+    const text = replanText.trim();
+    if (!text || replanLoading) return;
+    setReplanLoading(true);
+    setReplanError(null);
+    try {
+      const res = await fetch("/api/replan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Помилка сервера");
+      const busy: BusyBlock[] = data.busy ?? [];
+      if (busy.length === 0) {
+        setReplanError("Не вдалося зрозуміти обмеження. Напр.: «зустрічі 14–16».");
+        return;
+      }
+      setBusyBlocks(busy);
+      setReplanOpen(false);
+      setReplanText("");
+      setToast({
+        message: `План перебудовано навколо ${busy.length} ${plural(busy.length, "обмеження", "обмежень", "обмежень")}.`,
+      });
+    } catch (e) {
+      setReplanError(e instanceof Error ? e.message : "Щось пішло не так.");
+    } finally {
+      setReplanLoading(false);
+    }
+  }
+
+  function clearBusy() {
+    setBusyBlocks([]);
+    setToast({ message: "Обмеження скинуто." });
+  }
+
+  function handleExport() {
+    const n = downloadIcs(timeline.slots, today);
+    setToast({
+      message:
+        n > 0
+          ? `Експортовано ${n} ${plural(n, "подію", "події", "подій")} у файл .ics.`
+          : "Немає запланованих задач для експорту.",
+    });
   }
 
   function handleCarryOver() {
@@ -393,37 +539,66 @@ export default function Home() {
     <SwipeCtx.Provider value={{ openId: openSwipeId, setOpenId: setOpenSwipeId }}>
     <div className="app">
       <div className="header">
-        <h1>
-          {tab === "today"
-            ? "Сьогодні"
-            : tab === "week"
-            ? "Наступні 7 днів"
-            : "Незаплановане"}
-        </h1>
-        <div className="date">{dateLabel}</div>
+        <div className="header-main">
+          <h1>
+            {tab === "today"
+              ? "Сьогодні"
+              : tab === "week"
+              ? "Наступні 7 днів"
+              : "Незаплановане"}
+          </h1>
+          <div className="date">{dateLabel}</div>
+        </div>
+        <button
+          className="settings-btn"
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          aria-label="Налаштування робочого дня"
+        >
+          <Gear />
+        </button>
       </div>
 
       <div className="content">
-        {!loaded ? null : tab === "today" ? (
+        {!loaded ? null : tasks.length === 0 && tab === "today" ? (
+          <Welcome
+            onStart={() => setCaptureOpen(true)}
+            onTryExample={() => {
+              setDraft(EXAMPLE_DUMP);
+              setCaptureOpen(true);
+            }}
+          />
+        ) : tab === "today" ? (
           <TodayView
-            active={todayActive}
+            timeline={timeline}
             done={todayDone}
             overloaded={overloaded}
             plannedMinutes={plannedMinutes}
+            workLabel={workLabel}
             unfinishedP1={unfinishedP1}
             overdue={overdue}
             onToggle={toggleDone}
             onInbox={moveToInbox}
             onRemove={handleRemove}
             onCarryOver={handleCarryOver}
+            onMoveTomorrow={handleMoveTomorrow}
+            onOpen={setDetailId}
+            onReplan={() => {
+              setReplanError(null);
+              setReplanOpen(true);
+            }}
+            onClearBusy={clearBusy}
+            onExport={handleExport}
           />
         ) : tab === "week" ? (
           <WeekView
             week={week}
             tasksByDay={tasksByDay}
+            workOpts={workOpts}
             onToggle={toggleDone}
             onRemove={handleRemove}
             onMove={moveToDate}
+            onOpen={setDetailId}
           />
         ) : (
           <InboxView
@@ -431,6 +606,7 @@ export default function Home() {
             onSchedule={scheduleToday}
             onToggle={toggleDone}
             onRemove={handleRemove}
+            onOpen={setDetailId}
           />
         )}
       </div>
@@ -559,38 +735,446 @@ export default function Home() {
           </div>
         </>
       )}
+
+      {/* Шторка налаштувань робочого дня */}
+      {settingsOpen && (
+        <>
+          <div
+            className="sheet-backdrop"
+            onClick={() => setSettingsOpen(false)}
+          />
+          <div
+            className="sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Налаштування робочого дня"
+          >
+            <div className="sheet-grabber" />
+            <div className="sheet-head">
+              <div className="sheet-title">Робочий день</div>
+              <button
+                className="sheet-close"
+                onClick={() => setSettingsOpen(false)}
+                aria-label="Закрити"
+                type="button"
+              >
+                <Close />
+              </button>
+            </div>
+            <div className="hint" style={{ marginBottom: 8 }}>
+              Години, у межах яких AI планує задачі. Обід (13:00–14:00)
+              враховується автоматично, якщо потрапляє в цей проміжок.
+            </div>
+            <div className="detail-grid">
+              <div>
+                <div className="detail-label">Початок</div>
+                <input
+                  type="time"
+                  className="detail-input"
+                  value={settings.dayStart}
+                  onChange={(e) =>
+                    updateSettings({ dayStart: e.target.value || "09:00" })
+                  }
+                  aria-label="Початок робочого дня"
+                />
+              </div>
+              <div>
+                <div className="detail-label">Кінець</div>
+                <input
+                  type="time"
+                  className="detail-input"
+                  value={settings.dayEnd}
+                  onChange={(e) =>
+                    updateSettings({ dayEnd: e.target.value || "18:00" })
+                  }
+                  aria-label="Кінець робочого дня"
+                />
+              </div>
+            </div>
+            <div className="settings-summary">
+              Доступно для планування: <b>~{fmtMinutes(workLabel.minutes)}</b> (
+              {workLabel.range})
+            </div>
+            <div className="capture-actions">
+              <button
+                className="primary-btn"
+                type="button"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Готово
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Шторка «перепланувати з обмеженнями» */}
+      {replanOpen && (
+        <>
+          <div
+            className="sheet-backdrop"
+            onClick={() => setReplanOpen(false)}
+          />
+          <div
+            className="sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Перепланувати з обмеженнями"
+          >
+            <div className="sheet-grabber" />
+            <div className="sheet-head">
+              <div className="sheet-title">Перепланувати з обмеженнями</div>
+              <button
+                className="sheet-close"
+                onClick={() => setReplanOpen(false)}
+                aria-label="Закрити"
+                type="button"
+              >
+                <Close />
+              </button>
+            </div>
+            <div className="hint" style={{ marginBottom: 8 }}>
+              Опиши, коли ти зайнятий — AI перебудує план навколо цього.
+            </div>
+            <textarea
+              autoFocus
+              value={replanText}
+              onChange={(e) => setReplanText(e.target.value)}
+              placeholder="Напр.: у мене зустрічі 14–16, і до 10 не можу…"
+            />
+            <div className="capture-actions">
+              <button
+                className="primary-btn"
+                onClick={handleReplan}
+                disabled={replanLoading || !replanText.trim()}
+                type="button"
+              >
+                {replanLoading ? (
+                  <span className="spinner" />
+                ) : (
+                  "Перебудувати план"
+                )}
+              </button>
+            </div>
+            {replanError && <div className="error">{replanError}</div>}
+          </div>
+        </>
+      )}
+
+      {/* Шторка деталей задачі */}
+      {detailTask && (
+        <TaskDetail
+          task={detailTask}
+          onClose={() => setDetailId(null)}
+          onUpdate={(patch) => updateTask(detailTask.id, patch)}
+          onToggleDone={() => toggleDone(detailTask.id)}
+          onDelete={() => {
+            setDetailId(null);
+            handleRemove(detailTask.id);
+          }}
+        />
+      )}
     </div>
     </SwipeCtx.Provider>
   );
 }
 
+// ---- Вітальний екран (перше відкриття, жодної задачі) ----
+function Welcome(props: { onStart: () => void; onTryExample: () => void }) {
+  const { onStart, onTryExample } = props;
+  return (
+    <div className="welcome">
+      <div className="welcome-badge">✨ AI-планер дня</div>
+      <h2 className="welcome-title">Вивали все з голови — решту зробить AI</h2>
+      <p className="welcome-sub">
+        Надиктуй або напиши все підряд, що крутиться в голові. AI сам розкладе це
+        на задачі: пріоритетність, час, дедлайни й теги — та збере план на день.
+      </p>
+
+      <div className="welcome-steps">
+        <div className="welcome-step">
+          <span className="ws-num">1</span>
+          <span>Вивали думки одним потоком</span>
+        </div>
+        <div className="welcome-step">
+          <span className="ws-num">2</span>
+          <span>AI перетворює хаос на задачі</span>
+        </div>
+        <div className="welcome-step">
+          <span className="ws-num">3</span>
+          <span>Отримуєш готовий план на день</span>
+        </div>
+      </div>
+
+      <button className="welcome-cta" type="button" onClick={onStart}>
+        <Plus />
+        Записати перші думки
+      </button>
+
+      <button className="welcome-example" type="button" onClick={onTryExample}>
+        <span className="we-label">Спробувати на прикладі</span>
+        <span className="we-text">«{EXAMPLE_DUMP}»</span>
+      </button>
+    </div>
+  );
+}
+
+// ---- Деталі задачі: нотатки, підзадачі, пріоритет, час ----
+function subId(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `s_${Math.random().toString(36).slice(2)}`;
+}
+
+function TaskDetail(props: {
+  task: Task;
+  onClose: () => void;
+  onUpdate: (patch: Partial<Task>) => void;
+  onToggleDone: () => void;
+  onDelete: () => void;
+}) {
+  const { task: t, onClose, onUpdate, onToggleDone, onDelete } = props;
+  const [newSub, setNewSub] = useState("");
+  const done = t.status === "done";
+  const subDone = t.subtasks.filter((s) => s.done).length;
+
+  function addSub() {
+    const title = newSub.trim();
+    if (!title) return;
+    onUpdate({
+      subtasks: [...t.subtasks, { id: subId(), title, done: false }],
+    });
+    setNewSub("");
+  }
+  function toggleSub(id: string) {
+    onUpdate({
+      subtasks: t.subtasks.map((s) =>
+        s.id === id ? { ...s, done: !s.done } : s
+      ),
+    });
+  }
+  function removeSub(id: string) {
+    onUpdate({ subtasks: t.subtasks.filter((s) => s.id !== id) });
+  }
+
+  return (
+    <>
+      <div className="sheet-backdrop" onClick={onClose} />
+      <div
+        className="sheet detail-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Деталі задачі"
+      >
+        <div className="sheet-grabber" />
+        <div className="sheet-head">
+          <div className="sheet-title">Деталі задачі</div>
+          <button
+            className="sheet-close"
+            onClick={onClose}
+            aria-label="Закрити"
+            type="button"
+          >
+            <Close />
+          </button>
+        </div>
+
+        <div className="detail-scroll">
+          <input
+            className="detail-title"
+            value={t.title}
+            onChange={(e) => onUpdate({ title: e.target.value })}
+            placeholder="Назва задачі"
+            aria-label="Назва задачі"
+          />
+
+          <div className="detail-label">Пріоритетність</div>
+          <div className="prio-row">
+            {([1, 2, 3, 4] as Priority[]).map((p) => (
+              <button
+                key={p}
+                type="button"
+                className={`prio-btn p${p} ${t.priority === p ? "on" : ""}`}
+                onClick={() => onUpdate({ priority: p })}
+              >
+                {PRIORITY_META[p].short}
+              </button>
+            ))}
+          </div>
+
+          <div className="detail-grid">
+            <div>
+              <div className="detail-label">Час початку</div>
+              <input
+                type="time"
+                className="detail-input"
+                value={t.startTime ?? ""}
+                onChange={(e) =>
+                  onUpdate({ startTime: e.target.value || null })
+                }
+                aria-label="Час початку"
+              />
+            </div>
+            <div>
+              <div className="detail-label">Тривалість, хв</div>
+              <input
+                type="number"
+                min={0}
+                step={5}
+                className="detail-input"
+                value={t.estimateMinutes ?? ""}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  onUpdate({ estimateMinutes: n > 0 ? n : null });
+                }}
+                placeholder="—"
+                aria-label="Тривалість у хвилинах"
+              />
+            </div>
+          </div>
+
+          <div className="detail-label">
+            Підзадачі{" "}
+            {t.subtasks.length > 0 && (
+              <span className="sub-count">
+                {subDone}/{t.subtasks.length}
+              </span>
+            )}
+          </div>
+          <div className="sub-list">
+            {t.subtasks.map((s) => (
+              <div className="sub-item" key={s.id}>
+                <button
+                  type="button"
+                  className={`checkbox small ${s.done ? "done" : ""}`}
+                  onClick={() => toggleSub(s.id)}
+                  aria-label={s.done ? "Зняти відмітку" : "Виконати підзадачу"}
+                >
+                  {s.done && <Check />}
+                </button>
+                <span className={`sub-title ${s.done ? "done" : ""}`}>
+                  {s.title}
+                </span>
+                <button
+                  type="button"
+                  className="sub-remove"
+                  onClick={() => removeSub(s.id)}
+                  aria-label="Видалити підзадачу"
+                >
+                  <Close />
+                </button>
+              </div>
+            ))}
+            <div className="sub-add">
+              <input
+                value={newSub}
+                onChange={(e) => setNewSub(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addSub();
+                }}
+                placeholder="Додати підзадачу…"
+                aria-label="Нова підзадача"
+              />
+              <button
+                type="button"
+                className="sub-add-btn"
+                onClick={addSub}
+                disabled={!newSub.trim()}
+                aria-label="Додати"
+              >
+                <Plus />
+              </button>
+            </div>
+          </div>
+
+          <div className="detail-label">Нотатки</div>
+          <textarea
+            className="detail-notes"
+            value={t.notes}
+            onChange={(e) => onUpdate({ notes: e.target.value })}
+            placeholder="Деталі, посилання, контекст…"
+            aria-label="Нотатки"
+          />
+
+          <div className="detail-footer">
+            <button
+              type="button"
+              className={`detail-done ${done ? "on" : ""}`}
+              onClick={onToggleDone}
+            >
+              {done ? "↩ Повернути в роботу" : "✓ Виконано"}
+            </button>
+            <button type="button" className="detail-delete" onClick={onDelete}>
+              <Trash />
+              Видалити
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ---- Today ----
 function TodayView(props: {
-  active: Task[];
+  timeline: Timeline;
   done: Task[];
   overloaded: boolean;
   plannedMinutes: number;
+  workLabel: { minutes: number; range: string };
   unfinishedP1: Task[];
   overdue: Task[];
   onToggle: (id: string) => void;
   onInbox: (id: string) => void;
   onRemove: (id: string) => void;
   onCarryOver: () => void;
+  onMoveTomorrow: (id: string) => void;
+  onOpen: (id: string) => void;
+  onReplan: () => void;
+  onClearBusy: () => void;
+  onExport: () => void;
 }) {
   const {
-    active,
+    timeline,
     done,
     overloaded,
     plannedMinutes,
+    workLabel,
     unfinishedP1,
     overdue,
     onToggle,
     onInbox,
     onRemove,
     onCarryOver,
+    onMoveTomorrow,
+    onOpen,
+    onReplan,
+    onClearBusy,
+    onExport,
   } = props;
 
-  if (active.length === 0 && done.length === 0) {
+  const scheduled = timeline.slots.filter((s) => !s.overflow);
+  const overflow = timeline.overflow;
+  const busy = timeline.busy;
+  const activeCount = scheduled.length + overflow.length;
+
+  // Хронологічний список для рендеру: задачі + зайняті інтервали разом.
+  const rows: Array<
+    | { kind: "task"; start: number; slot: (typeof scheduled)[number] }
+    | { kind: "busy"; start: number; block: (typeof busy)[number] }
+  > = [
+    ...scheduled.map((slot) => ({
+      kind: "task" as const,
+      start: slot.startMin,
+      slot,
+    })),
+    ...busy.map((block) => ({
+      kind: "busy" as const,
+      start: block.startMin,
+      block,
+    })),
+  ].sort((a, b) => a.start - b.start);
+
+  if (activeCount === 0 && done.length === 0) {
     return (
       <div className="empty">
         <div className="big">☀️</div>
@@ -622,7 +1206,7 @@ function TodayView(props: {
           <span>
             {unfinishedP1.length}{" "}
             {plural(unfinishedP1.length, "пріоритетна задача", "пріоритетні задачі", "пріоритетних задач")}{" "}
-            (P1) ще не виконано — почни з них.
+            (висока пріоритетність) ще не виконано — почни з них.
           </span>
         </div>
       )}
@@ -630,36 +1214,109 @@ function TodayView(props: {
         <div className="banner warn">
           <span>⚖️</span>
           <span>
-            Заплановано ~{fmtMinutes(plannedMinutes)} роботи на 8-годинний день. План
-            перевантажений — щось варто перенести.
+            Заплановано ~{fmtMinutes(plannedMinutes)}, а робочий день —{" "}
+            {workLabel.range} (~{fmtMinutes(workLabel.minutes)}). {overflow.length}{" "}
+            {plural(overflow.length, "задача не вміщується", "задачі не вміщуються", "задач не вміщуються")}
+            . Перенеси нижче виділені на завтра.
           </span>
         </div>
       )}
 
-      {active.length > 0 && (
+      {activeCount > 0 && (
         <div className="summary">
-          {active.length} {plural(active.length, "задача", "задачі", "задач")}
-          {plannedMinutes > 0 && ` · ~${fmtMinutes(plannedMinutes)}`}
+          {activeCount} {plural(activeCount, "задача", "задачі", "задач")}
+          {plannedMinutes > 0 && ` · ~${fmtMinutes(plannedMinutes)}`} · план за
+          енергією: важче — на ранок
         </div>
       )}
 
-      {active.map((t) => (
-        <TaskRow
-          key={t.id}
-          task={t}
-          onToggle={onToggle}
-          onRemove={onRemove}
-          secondaryAction={{ label: "У вхідні", fn: () => onInbox(t.id) }}
-        />
-      ))}
+      {activeCount > 0 && (
+        <div className="replan-bar">
+          <button type="button" className="replan-btn" onClick={onReplan}>
+            🔧 Перепланувати з обмеженнями
+          </button>
+          {busy.length > 0 && (
+            <div className="busy-chips">
+              {busy.map((b, i) => (
+                <span className="busy-chip" key={i}>
+                  {b.label} {fmtTime(b.startMin)}–{fmtTime(b.endMin)}
+                </span>
+              ))}
+              <button type="button" className="busy-clear" onClick={onClearBusy}>
+                Скинути
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {rows.map((row) =>
+        row.kind === "task" ? (
+          <TaskRow
+            key={row.slot.task.id}
+            task={row.slot.task}
+            timeLabel={`${fmtTime(row.slot.startMin)}–${fmtTime(row.slot.endMin)}`}
+            fixed={row.slot.fixed}
+            onToggle={onToggle}
+            onRemove={onRemove}
+            onOpen={onOpen}
+            secondaryAction={{
+              label: "У вхідні",
+              fn: () => onInbox(row.slot.task.id),
+            }}
+          />
+        ) : (
+          <div className="busy-row" key={`busy-${row.start}`}>
+            <div className="busy-row-time">
+              {fmtTime(row.block.startMin)}–{fmtTime(row.block.endMin)}
+            </div>
+            <div className="busy-row-label">🔒 {row.block.label}</div>
+          </div>
+        )
+      )}
+
+      {overflow.length > 0 && (
+        <>
+          <div className="section-title overflow-title">
+            Не вміщується в робочий день. Шкода, що в добі всього 24 години
+          </div>
+          {overflow.map((s) => (
+            <TaskRow
+              key={s.task.id}
+              task={s.task}
+              overflow
+              onToggle={onToggle}
+              onRemove={onRemove}
+              onOpen={onOpen}
+              secondaryAction={{
+                label: "→ Завтра",
+                fn: () => onMoveTomorrow(s.task.id),
+              }}
+              primaryHighlight
+            />
+          ))}
+        </>
+      )}
 
       {done.length > 0 && (
         <>
           <div className="section-title">Виконано ({done.length})</div>
           {done.map((t) => (
-            <TaskRow key={t.id} task={t} onToggle={onToggle} onRemove={onRemove} />
+            <TaskRow
+              key={t.id}
+              task={t}
+              onToggle={onToggle}
+              onRemove={onRemove}
+              onOpen={onOpen}
+            />
           ))}
         </>
+      )}
+
+      {activeCount > 0 && (
+        <button type="button" className="export-btn" onClick={onExport}>
+          📅 Експортувати план у календар (.ics)
+        </button>
       )}
     </>
   );
@@ -671,8 +1328,9 @@ function InboxView(props: {
   onSchedule: (id: string) => void;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
+  onOpen: (id: string) => void;
 }) {
-  const { inbox, onSchedule, onToggle, onRemove } = props;
+  const { inbox, onSchedule, onToggle, onRemove, onOpen } = props;
   if (inbox.length === 0) {
     return (
       <div className="empty">
@@ -693,6 +1351,7 @@ function InboxView(props: {
           task={t}
           onToggle={onToggle}
           onRemove={onRemove}
+          onOpen={onOpen}
           secondaryAction={{ label: "→ Сьогодні", fn: () => onSchedule(t.id) }}
           primaryHighlight
         />
@@ -705,11 +1364,13 @@ function InboxView(props: {
 function WeekView(props: {
   week: WeekDay[];
   tasksByDay: Record<string, Task[]>;
+  workOpts: WorkdayOptions;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
   onMove: (id: string, date: string) => void;
+  onOpen: (id: string) => void;
 }) {
-  const { week, tasksByDay, onToggle, onRemove, onMove } = props;
+  const { week, tasksByDay, workOpts, onToggle, onRemove, onMove, onOpen } = props;
   const total = week.reduce((s, d) => s + tasksByDay[d.iso].length, 0);
 
   if (total === 0) {
@@ -729,8 +1390,26 @@ function WeekView(props: {
       <div className="summary">Розклад на 7 днів. Задачі можна переносити між днями.</div>
       {week.map((day) => {
         const list = tasksByDay[day.iso];
-        const active = list.filter((t) => t.status !== "done");
-        const mins = active.reduce((s, t) => s + (t.estimateMinutes ?? 0), 0);
+        const doneTasks = list.filter((t) => t.status === "done");
+        const activeTasks = list.filter((t) => t.status !== "done");
+        // Той самий таймлайн «за енергією», що й на Сьогодні — з годинами.
+        const tl = buildTimeline(activeTasks, [], workOpts);
+        const scheduled = tl.slots.filter((s) => !s.overflow);
+        const timeMap = new Map<string, { label: string; fixed: boolean }>();
+        for (const s of scheduled) {
+          timeMap.set(s.task.id, {
+            label: `${fmtTime(s.startMin)}–${fmtTime(s.endMin)}`,
+            fixed: s.fixed,
+          });
+        }
+        const overflowIds = new Set(tl.overflow.map((s) => s.task.id));
+        // Порядок: заплановані за часом → поза межами дня → виконані.
+        const ordered = [
+          ...scheduled.map((s) => s.task),
+          ...tl.overflow.map((s) => s.task),
+          ...doneTasks,
+        ];
+        const mins = tl.plannedMinutes;
         return (
           <div key={day.iso} className="week-day">
             <div className="week-day-head">
@@ -747,14 +1426,18 @@ function WeekView(props: {
             {list.length === 0 ? (
               <div className="week-empty">Вільно</div>
             ) : (
-              list.map((t) => (
+              ordered.map((t) => (
                 <WeekTaskRow
                   key={t.id}
                   task={t}
                   week={week}
+                  timeLabel={timeMap.get(t.id)?.label}
+                  fixed={timeMap.get(t.id)?.fixed}
+                  overflow={overflowIds.has(t.id)}
                   onToggle={onToggle}
                   onRemove={onRemove}
                   onMove={onMove}
+                  onOpen={onOpen}
                 />
               ))
             )}
@@ -768,16 +1451,22 @@ function WeekView(props: {
 function WeekTaskRow(props: {
   task: Task;
   week: WeekDay[];
+  timeLabel?: string;
+  fixed?: boolean;
+  overflow?: boolean;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
   onMove: (id: string, date: string) => void;
+  onOpen: (id: string) => void;
 }) {
-  const { task: t, week, onToggle, onRemove, onMove } = props;
+  const { task: t, week, timeLabel, fixed, overflow, onToggle, onRemove, onMove, onOpen } =
+    props;
   const done = t.status === "done";
   const pClass = t.priority <= 3 ? `p${t.priority}` : "";
+  const subDone = t.subtasks.filter((s) => s.done).length;
   return (
     <SwipeToDelete id={t.id} onDelete={() => onRemove(t.id)}>
-      <div className={`task week-task ${done ? "completed" : ""}`}>
+      <div className={`task week-task ${done ? "completed" : ""} ${overflow ? "is-overflow" : ""}`}>
         <button
           className={`checkbox ${done ? "done" : pClass}`}
           onClick={() => onToggle(t.id)}
@@ -786,16 +1475,31 @@ function WeekTaskRow(props: {
         >
           {done && <Check />}
         </button>
-        <div className="task-body">
+        <button
+          className="task-body"
+          type="button"
+          onClick={() => onOpen(t.id)}
+          aria-label={`Відкрити «${t.title}»`}
+        >
+          {(timeLabel || overflow) && (
+            <div className={`task-time ${fixed ? "fixed" : ""}`}>
+              {overflow ? "⚠ бракує часу 😔" : fixed ? `📌 ${timeLabel}` : timeLabel}
+            </div>
+          )}
           <div className="task-title">{t.title}</div>
           <div className="task-meta">
             {t.priority <= 3 && (
               <span className={`meta-chip p${t.priority}`}>
-                {PRIORITY_META[t.priority as Priority].short}
+                Пріоритетність: {PRIORITY_META[t.priority as Priority].short}
               </span>
             )}
             {t.estimateMinutes != null && (
               <span className="meta-chip">🕐 {fmtMinutes(t.estimateMinutes)}</span>
+            )}
+            {t.subtasks.length > 0 && (
+              <span className="meta-chip">
+                ☑ {subDone}/{t.subtasks.length}
+              </span>
             )}
             {t.tags.map((tag) => (
               <span className="tag" key={tag}>
@@ -803,7 +1507,7 @@ function WeekTaskRow(props: {
               </span>
             ))}
           </div>
-        </div>
+        </button>
         <div className="task-side">
           <select
             className="day-select"
@@ -828,15 +1532,30 @@ function TaskRow(props: {
   task: Task;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
+  onOpen?: (id: string) => void;
+  timeLabel?: string;
+  fixed?: boolean;
+  overflow?: boolean;
   secondaryAction?: { label: string; fn: () => void };
   primaryHighlight?: boolean;
 }) {
-  const { task: t, onToggle, onRemove, secondaryAction, primaryHighlight } = props;
+  const {
+    task: t,
+    onToggle,
+    onRemove,
+    onOpen,
+    timeLabel,
+    fixed,
+    overflow,
+    secondaryAction,
+    primaryHighlight,
+  } = props;
   const done = t.status === "done";
   const pClass = t.priority <= 3 ? `p${t.priority}` : "";
+  const subDone = t.subtasks.filter((s) => s.done).length;
   return (
     <SwipeToDelete id={t.id} onDelete={() => onRemove(t.id)}>
-      <div className={`task ${done ? "completed" : ""}`}>
+      <div className={`task ${done ? "completed" : ""} ${overflow ? "is-overflow" : ""}`}>
         <button
           className={`checkbox ${done ? "done" : pClass}`}
           onClick={() => onToggle(t.id)}
@@ -846,16 +1565,31 @@ function TaskRow(props: {
           {done && <Check />}
         </button>
 
-        <div className="task-body">
+        <button
+          className="task-body"
+          type="button"
+          onClick={() => onOpen?.(t.id)}
+          aria-label={`Відкрити «${t.title}»`}
+        >
+          {(timeLabel || overflow) && (
+            <div className={`task-time ${fixed ? "fixed" : ""}`}>
+              {overflow ? "⚠ бракує часу 😔" : fixed ? `📌 ${timeLabel}` : timeLabel}
+            </div>
+          )}
           <div className="task-title">{t.title}</div>
           <div className="task-meta">
             {t.priority <= 3 && (
               <span className={`meta-chip p${t.priority}`}>
-                {PRIORITY_META[t.priority as Priority].short}
+                Пріоритетність: {PRIORITY_META[t.priority as Priority].short}
               </span>
             )}
             {t.estimateMinutes != null && (
               <span className="meta-chip">🕐 {fmtMinutes(t.estimateMinutes)}</span>
+            )}
+            {t.subtasks.length > 0 && (
+              <span className="meta-chip">
+                ☑ {subDone}/{t.subtasks.length}
+              </span>
             )}
             {t.dueDate && (
               <span
@@ -870,7 +1604,7 @@ function TaskRow(props: {
               </span>
             ))}
           </div>
-        </div>
+        </button>
 
         {secondaryAction && !done && (
           <div className="task-side">

@@ -4,6 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import type { ParsedTask, Task } from "./types";
 
 const STORAGE_KEY = "ai-day-planner:tasks:v1";
+const SETTINGS_KEY = "ai-day-planner:settings:v1";
+
+// Налаштування робочого дня (години планування).
+export interface Settings {
+  dayStart: string; // "HH:MM"
+  dayEnd: string;
+}
+const DEFAULT_SETTINGS: Settings = { dayStart: "09:00", dayEnd: "18:00" };
 
 export function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
@@ -22,16 +30,69 @@ function newId(): string {
   return `t_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 }
 
+// Бекфіл полів, доданих пізніше (startTime, subtasks) — щоб старі задачі
+// з localStorage не ламали новий UI.
+function normalize(t: Partial<Task>): Task {
+  return {
+    ...(t as Task),
+    startTime: t.startTime ?? null,
+    subtasks: Array.isArray(t.subtasks) ? t.subtasks : [],
+    tags: Array.isArray(t.tags) ? t.tags : [],
+    notes: typeof t.notes === "string" ? t.notes : "",
+  };
+}
+
 function load(): Task[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.map(normalize) : [];
   } catch {
     return [];
   }
+}
+
+export function useSettings() {
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SETTINGS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setSettings({
+          dayStart:
+            typeof parsed?.dayStart === "string"
+              ? parsed.dayStart
+              : DEFAULT_SETTINGS.dayStart,
+          dayEnd:
+            typeof parsed?.dayEnd === "string"
+              ? parsed.dayEnd
+              : DEFAULT_SETTINGS.dayEnd,
+        });
+      }
+    } catch {
+      /* лишаємо дефолти */
+    }
+    setLoaded(true);
+  }, []);
+
+  const update = useCallback((patch: Partial<Settings>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch };
+      try {
+        window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      } catch {
+        /* сховище недоступне */
+      }
+      return next;
+    });
+  }, []);
+
+  return { settings, loaded, update };
 }
 
 export function useTasks() {
@@ -66,9 +127,11 @@ export function useTasks() {
         estimateMinutes: p.estimateMinutes,
         dueDate: p.dueDate,
         scheduledDate,
+        startTime: p.startTime ?? null,
         status: scheduledDate ? "planned" : "inbox",
         tags: p.tags,
         notes: "",
+        subtasks: [],
         createdAt: now,
         completedAt: null,
       };

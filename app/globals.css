@@ -405,11 +405,43 @@ textarea {
 .task-body {
   flex: 1;
   min-width: 0;
+  /* стала <button> для відкриття деталей — скидаємо стилі кнопки */
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: block;
 }
 .task-title {
   font-size: 15.5px;
   line-height: 1.35;
   word-break: break-word;
+}
+/* Час у розкладі дня */
+.task-time {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.task-time.fixed {
+  color: var(--text);
+}
+.task.is-overflow {
+  border-style: dashed;
+  border-color: var(--warning);
+  opacity: 0.92;
+}
+.task.is-overflow .task-time {
+  color: var(--warning-text, var(--warning));
+}
+.overflow-title {
+  color: var(--warning-text, var(--warning));
 }
 .task.completed .task-title {
   color: var(--text-dim);
@@ -715,4 +747,405 @@ textarea {
   .tag {
     color: #b0b0b0;
   }
+}
+
+/* ===== Вітальний екран (перше відкриття) ===== */
+.welcome {
+  padding: 18px 4px 40px;
+  animation: fade 0.25s ease;
+}
+.welcome-badge {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+.welcome-title {
+  font-size: 26px;
+  line-height: 1.2;
+  font-weight: 800;
+  color: var(--text);
+  margin: 0 0 10px;
+  letter-spacing: -0.02em;
+}
+.welcome-sub {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  margin: 0 0 22px;
+}
+.welcome-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 26px;
+}
+.welcome-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 15px;
+  color: var(--text);
+}
+.ws-num {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+}
+.welcome-cta {
+  width: 100%;
+  height: 54px;
+  border-radius: 16px;
+  background: var(--accent);
+  color: var(--on-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+.welcome-cta:active {
+  background: var(--accent-dark);
+  transform: scale(0.98);
+}
+.welcome-example {
+  width: 100%;
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.welcome-example:active {
+  background: var(--surface-2);
+}
+.we-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.we-text {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+/* ===== Шторка деталей задачі ===== */
+.detail-sheet {
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+}
+.detail-scroll {
+  overflow-y: auto;
+  padding-top: 4px;
+}
+.detail-title {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  color: inherit;
+  margin-bottom: 16px;
+}
+.detail-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  margin: 14px 2px 8px;
+}
+.prio-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.prio-btn {
+  padding: 9px 4px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1.5px solid transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.prio-btn.on.p1 {
+  border-color: var(--p1);
+  color: var(--p1);
+  background: var(--p1-soft);
+}
+.prio-btn.on.p2 {
+  border-color: var(--p2);
+  color: var(--p2);
+  background: var(--p2-soft);
+}
+.prio-btn.on.p3 {
+  border-color: var(--p3);
+  color: var(--p3);
+  background: var(--p3-soft);
+}
+.prio-btn.on.p4 {
+  border-color: var(--text-dim);
+  color: var(--text);
+  background: var(--surface-2);
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.detail-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  outline: none;
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 16px;
+  color: inherit;
+}
+.sub-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sub-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px;
+}
+.checkbox.small {
+  width: 20px;
+  height: 20px;
+  border-width: 2px;
+  margin-top: 0;
+}
+.sub-title {
+  flex: 1;
+  font-size: 14.5px;
+  word-break: break-word;
+}
+.sub-title.done {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+.sub-remove {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+  border-radius: 8px;
+}
+.sub-count {
+  color: var(--accent);
+}
+.sub-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.sub-add input {
+  flex: 1;
+  border: 1px dashed var(--border);
+  outline: none;
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 16px;
+  color: inherit;
+}
+.sub-add-btn {
+  flex: none;
+  width: 44px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+}
+.sub-add-btn:disabled {
+  opacity: 0.5;
+}
+.detail-notes {
+  width: 100%;
+  border: 1px solid var(--border);
+  outline: none;
+  resize: none;
+  min-height: 80px;
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  color: inherit;
+}
+.detail-footer {
+  display: flex;
+  gap: 10px;
+  margin: 18px 0 6px;
+}
+.detail-done {
+  flex: 1;
+  height: 48px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 15px;
+  font-weight: 700;
+}
+.detail-done.on {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.detail-delete {
+  flex: none;
+  height: 48px;
+  padding: 0 16px;
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  color: var(--danger-text, var(--danger));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ===== Перепланування з обмеженнями ===== */
+.replan-bar {
+  margin: 0 0 12px;
+}
+.replan-btn {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+.replan-btn:active {
+  transform: scale(0.99);
+}
+.busy-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+}
+.busy-chip {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.busy-clear {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--danger);
+  padding: 3px 4px;
+}
+.busy-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: var(--radius-md);
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--surface-2),
+    var(--surface-2) 8px,
+    var(--surface) 8px,
+    var(--surface) 16px
+  );
+  border: 1px dashed var(--border);
+}
+.busy-row-time {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.busy-row-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+/* ===== Експорт у календар ===== */
+.export-btn {
+  width: 100%;
+  margin-top: 18px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.export-btn:active {
+  background: var(--surface-2);
+}
+
+/* ===== Шапка з налаштуваннями ===== */
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.header-main {
+  min-width: 0;
+}
+.settings-btn {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  margin-top: 2px;
+}
+.settings-btn:active {
+  transform: scale(0.94);
+}
+.settings-summary {
+  margin-top: 12px;
+  font-size: 13.5px;
+  color: var(--text-dim);
+}
+.settings-summary b {
+  color: var(--text);
 }
