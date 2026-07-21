@@ -1,15 +1,62 @@
 :root {
-  --bg: #faf9f7;
+  /* ===== Нейтралі ===== */
+  --bg: #f7f8fa;
   --surface: #ffffff;
-  --surface-2: #f4f3f1;
-  --border: #ececec;
-  --text: #202020;
-  --text-dim: #808080;
-  --accent: #e44332;
-  --accent-dark: #c93a2b;
-  --green: #058527;
+  --surface-2: #f1f3f6;
+  --border: #e5e7eb;
+  --text: #1a1d21;
+  --text-dim: #5b616b; /* WCAG AA ≥4.5:1 на --bg */
+
+  /* ===== Головний (дія / бренд) — індиго ===== */
+  --accent: #4f46e5;
+  --accent-dark: #4338ca;
+  --accent-soft: #eef2ff;
+  --on-accent: #ffffff; /* текст/іконка поверх --accent */
+
+  /* ===== Семантичні стани ===== */
+  --success: #16a34a;
+  --success-soft: #dcfce7;
+  --warning: #d97706;
+  --warning-soft: #fef3c7;
+  --warning-text: #92400e;
+  --danger: #dc2626;
+  --danger-soft: #fee2e2;
+  --danger-text: #b91c1c;
+
+  /* ===== Пріоритети (єдине джерело — читаються з CSS) ===== */
+  --p1: #dc2626;
+  --p1-soft: #fee2e2;
+  --p2: #d97706;
+  --p2-soft: #fef3c7;
+  --p3: #2563eb;
+  --p3-soft: #dbeafe;
+  --p4: #6b7280;
+
+  /* legacy-алiас (щоб нічого не зламати) */
+  --green: var(--success);
+
+  /* ===== Типографіка ===== */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 17px;
+  --text-xl: 22px;
+
+  /* ===== Відступи ===== */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* ===== Радіуси ===== */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius: var(--radius-md);
+
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  --radius: 14px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
@@ -78,32 +125,151 @@ textarea {
 
 .content {
   flex: 1;
-  padding: 0 16px 120px;
+  padding: 0 16px 132px;
 }
 
-/* ===== Capture ===== */
-.capture {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: 14px;
-  margin-bottom: 18px;
+/* ===== Головна дія: FAB + нижня шторка ===== */
+.fab {
+  position: fixed;
+  z-index: 30;
+  right: 16px;
+  bottom: calc(74px + var(--safe-bottom));
+  height: 52px;
+  padding: 0 20px;
+  border-radius: 26px;
+  background: var(--accent);
+  color: var(--on-accent);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.4);
+  transition: transform 0.12s, background 0.15s;
 }
-.capture textarea {
+.fab:active {
+  background: var(--accent-dark);
+  transform: scale(0.96);
+}
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 40;
+  animation: fade 0.15s ease;
+}
+.sheet {
+  position: fixed;
+  z-index: 50;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: 560px;
+  margin: 0 auto;
+  background: var(--surface);
+  border-radius: 20px 20px 0 0;
+  padding: 8px 16px calc(16px + var(--safe-bottom));
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.18);
+  animation: sheet-up 0.22s ease;
+}
+.sheet-grabber {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  margin: 6px auto 10px;
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 2px 10px;
+}
+.sheet-title {
+  font-weight: 700;
+  font-size: 17px;
+}
+.sheet-close {
+  width: 44px;
+  height: 44px;
+  margin: -8px -10px -8px 0;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+}
+.sheet textarea {
   width: 100%;
   border: none;
   outline: none;
   resize: none;
-  min-height: 88px;
-  background: transparent;
+  min-height: 96px;
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  padding: 12px;
   line-height: 1.45;
 }
 .capture-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 8px;
+  margin-top: 10px;
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ===== Тост / undo ===== */
+.toast {
+  position: fixed;
+  z-index: 35;
+  left: 16px;
+  right: 16px;
+  bottom: calc(140px + var(--safe-bottom));
+  max-width: 528px;
+  margin: 0 auto;
+  background: var(--text);
+  color: var(--bg);
+  border-radius: var(--radius-md);
+  padding: 10px 8px 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  font-size: 14px;
+  animation: toast-in 0.2s ease;
+}
+.toast-action {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .mic-btn {
   width: 46px;
@@ -120,26 +286,26 @@ textarea {
 }
 .mic-btn.on {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   animation: pulse 1.3s infinite;
 }
 @keyframes pulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(228, 67, 50, 0.5);
+    box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.5);
   }
   70% {
-    box-shadow: 0 0 0 12px rgba(228, 67, 50, 0);
+    box-shadow: 0 0 0 12px rgba(79, 70, 229, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(228, 67, 50, 0);
+    box-shadow: 0 0 0 0 rgba(79, 70, 229, 0);
   }
 }
 .primary-btn {
   flex: 1;
   height: 46px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-weight: 700;
   font-size: 15px;
   display: grid;
@@ -158,7 +324,7 @@ textarea {
   margin: 8px 2px 0;
 }
 .error {
-  color: var(--accent);
+  color: var(--danger);
   font-size: 13px;
   margin-top: 8px;
 }
@@ -176,7 +342,7 @@ textarea {
   align-items: center;
 }
 .banner {
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   padding: 11px 13px;
   font-size: 13.5px;
   margin-bottom: 12px;
@@ -186,24 +352,22 @@ textarea {
   line-height: 1.35;
 }
 .banner.warn {
-  background: #fff4e5;
-  color: #8a5200;
+  background: var(--warning-soft);
+  color: var(--warning-text);
 }
 .banner.alert {
-  background: #fdecea;
-  color: #b3261e;
+  background: var(--danger-soft);
+  color: var(--danger-text);
 }
-.banner .link {
-  font-weight: 700;
-  text-decoration: underline;
-  white-space: nowrap;
+.banner .link-btn {
+  color: inherit;
 }
 
 /* ===== Список задач ===== */
 .task {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   padding: 12px;
   margin-bottom: 8px;
   display: flex;
@@ -223,20 +387,20 @@ textarea {
   transition: all 0.15s;
 }
 .checkbox.p1 {
-  border-color: var(--accent);
-  background: #fdecea;
+  border-color: var(--p1);
+  background: var(--p1-soft);
 }
 .checkbox.p2 {
-  border-color: #e8940f;
-  background: #fdf1df;
+  border-color: var(--p2);
+  background: var(--p2-soft);
 }
 .checkbox.p3 {
-  border-color: #2f7bd6;
-  background: #e8f1fc;
+  border-color: var(--p3);
+  background: var(--p3-soft);
 }
 .checkbox.done {
-  background: var(--green);
-  border-color: var(--green);
+  background: var(--success);
+  border-color: var(--success);
   color: #fff;
 }
 .task-body {
@@ -266,8 +430,18 @@ textarea {
   align-items: center;
   gap: 3px;
 }
+/* Кольори пріоритетів — єдине джерело в токенах */
+.meta-chip.p1 {
+  color: var(--p1);
+}
+.meta-chip.p2 {
+  color: var(--p2);
+}
+.meta-chip.p3 {
+  color: var(--p3);
+}
 .meta-chip.due {
-  color: var(--accent);
+  color: var(--danger);
   font-weight: 600;
 }
 .tag {
@@ -286,7 +460,7 @@ textarea {
 .icon-btn {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   display: grid;
   place-items: center;
   color: var(--text-dim);
@@ -294,6 +468,84 @@ textarea {
 }
 .icon-btn:active {
   background: var(--border);
+}
+
+/* ===== Свайп-видалення ===== */
+.swipe-wrap {
+  position: relative;
+  margin-bottom: 8px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.swipe-card {
+  position: relative;
+  z-index: 1;
+  touch-action: pan-y;
+  will-change: transform;
+}
+.swipe-wrap .task {
+  margin-bottom: 0;
+  box-shadow: none;
+  border-radius: 0;
+}
+.swipe-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 96px;
+  background: var(--danger);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 700;
+  z-index: 0;
+}
+
+/* ===== Тап-таргети ≥44px ===== */
+.checkbox {
+  position: relative;
+}
+.checkbox::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+.task-side {
+  gap: 8px;
+}
+.row-action {
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.row-action.accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.link-btn {
+  display: inline-block;
+  padding: 6px 4px;
+  font-weight: 700;
+  text-decoration: underline;
+  color: inherit;
+  white-space: nowrap;
 }
 
 /* ===== Порожні стани ===== */
@@ -357,7 +609,7 @@ textarea {
   right: 50%;
   transform: translateX(20px);
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-size: 10px;
   font-weight: 700;
   min-width: 17px;
@@ -405,10 +657,11 @@ textarea {
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text-dim);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
-  padding: 5px 6px;
-  max-width: 104px;
+  min-height: 44px;
+  padding: 6px 8px;
+  max-width: 116px;
   outline: none;
 }
 
@@ -416,8 +669,8 @@ textarea {
 .spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.5);
-  border-top-color: #fff;
+  border: 2px solid color-mix(in srgb, currentColor 40%, transparent);
+  border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
@@ -429,29 +682,36 @@ textarea {
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1f1f1f;
-    --surface: #2a2a2a;
-    --surface-2: #333333;
-    --border: #3a3a3a;
+    --bg: #1a1b1e;
+    --surface: #26272b;
+    --surface-2: #303136;
+    --border: #3a3b40;
     --text: #f0f0f0;
-    --text-dim: #9a9a9a;
-  }
-  .banner.warn {
-    background: #3a2e18;
-    color: #f0c674;
-  }
-  .banner.alert {
-    background: #3a1f1c;
-    color: #f0a09a;
-  }
-  .checkbox.p1 {
-    background: #3a1f1c;
-  }
-  .checkbox.p2 {
-    background: #3a2e18;
-  }
-  .checkbox.p3 {
-    background: #1c2c3a;
+    --text-dim: #a0a4ab;
+
+    /* Головний освітлюємо для читабельності на темному тлі,
+       текст поверх нього робимо темним */
+    --accent: #818cf8;
+    --accent-dark: #6366f1;
+    --accent-soft: #26243f;
+    --on-accent: #1e1b3a;
+
+    --success: #22c55e;
+    --success-soft: #14321f;
+    --warning: #fbbf24;
+    --warning-soft: #3a2e18;
+    --warning-text: #f0c674;
+    --danger: #f87171;
+    --danger-soft: #3a1f1c;
+    --danger-text: #f0a09a;
+
+    --p1: #f87171;
+    --p1-soft: #3a1f1c;
+    --p2: #fbbf24;
+    --p2-soft: #3a2e18;
+    --p3: #60a5fa;
+    --p3-soft: #1c2c3a;
+    --p4: #9ca3af;
   }
   .tag {
     color: #b0b0b0;

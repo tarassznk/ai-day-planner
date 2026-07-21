@@ -36,14 +36,16 @@ export interface ParsedTask {
   scheduleToday: boolean;
 }
 
+// Кольори пріоритетів живуть у CSS-токенах (--p1..--p4) і застосовуються
+// через класи .meta-chip.p1/.p2/.p3 — тут лише текстові підписи.
 export const PRIORITY_META: Record<
   Priority,
-  { label: string; short: string; color: string }
+  { label: string; short: string }
 > = {
-  1: { label: "Пріоритет 1", short: "P1", color: "#e44332" },
-  2: { label: "Пріоритет 2", short: "P2", color: "#e8940f" },
-  3: { label: "Пріоритет 3", short: "P3", color: "#2f7bd6" },
-  4: { label: "Без пріоритету", short: "P4", color: "#8a8f98" },
+  1: { label: "Пріоритет 1", short: "P1" },
+  2: { label: "Пріоритет 2", short: "P2" },
+  3: { label: "Пріоритет 3", short: "P3" },
+  4: { label: "Без пріоритету", short: "P4" },
 };
 
 // Скільки продуктивних хвилин у робочому дні — для перевірки реалістичності.

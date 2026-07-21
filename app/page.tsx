@@ -1,6 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTasks, todayStr } from "@/lib/store";
 import { useSpeech } from "@/lib/useSpeech";
 import {
@@ -94,6 +101,130 @@ const Mic = () => (
     />
   </svg>
 );
+const Plus = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+    <path
+      d="M12 5v14M5 12h14"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+const Close = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+    <path
+      d="M6 6l12 12M18 6L6 18"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+const Trash = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+    <path
+      d="M6 7h12M9 7V5h6v2m-8 0l1 13h8l1-13"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+// Яка рядок-задача зараз "відкрита" свайпом — щоб відкритою була лише одна.
+const SwipeCtx = createContext<{
+  openId: string | null;
+  setOpenId: (id: string | null) => void;
+}>({ openId: null, setOpenId: () => {} });
+
+// Свайп ліворуч відкриває кнопку «Видалити». Тап по ній видаляє (з undo у тості).
+// touch-action: pan-y віддає вертикальний скрол браузеру, а горизонталь — нам.
+function SwipeToDelete({
+  id,
+  onDelete,
+  children,
+}: {
+  id: string;
+  onDelete: () => void;
+  children: React.ReactNode;
+}) {
+  const { openId, setOpenId } = useContext(SwipeCtx);
+  const open = openId === id;
+  const OPEN_W = 96;
+  const [dx, setDx] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const horiz = useRef(false);
+  const dxRef = useRef(0);
+
+  const translate = dragging ? dx : open ? -OPEN_W : 0;
+
+  function onTouchStart(e: React.TouchEvent) {
+    startX.current = e.touches[0].clientX;
+    startY.current = e.touches[0].clientY;
+    horiz.current = false;
+    dxRef.current = open ? -OPEN_W : 0;
+    setDragging(true);
+    setDx(dxRef.current);
+  }
+  function onTouchMove(e: React.TouchEvent) {
+    const ddx = e.touches[0].clientX - startX.current;
+    const ddy = e.touches[0].clientY - startY.current;
+    if (!horiz.current) {
+      if (Math.abs(ddx) > Math.abs(ddy) && Math.abs(ddx) > 6) {
+        horiz.current = true;
+      } else {
+        return;
+      }
+    }
+    const base = open ? -OPEN_W : 0;
+    let next = base + ddx;
+    if (next > 0) next = 0;
+    if (next < -OPEN_W - 24) next = -OPEN_W - 24;
+    dxRef.current = next;
+    setDx(next);
+  }
+  function onTouchEnd() {
+    setDragging(false);
+    if (horiz.current) {
+      setOpenId(dxRef.current <= -OPEN_W / 2 ? id : null);
+    } else if (open) {
+      setOpenId(null); // тап по відкритому рядку — закрити
+    }
+  }
+
+  return (
+    <div className="swipe-wrap">
+      <button
+        className="swipe-delete"
+        type="button"
+        aria-label="Видалити задачу"
+        onClick={() => {
+          setOpenId(null);
+          onDelete();
+        }}
+      >
+        <Trash />
+        Видалити
+      </button>
+      <div
+        className="swipe-card"
+        style={{
+          transform: `translateX(${translate}px)`,
+          transition: dragging ? "none" : "transform .18s ease",
+        }}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   const {
@@ -105,6 +236,8 @@ export default function Home() {
     moveToInbox,
     moveToDate,
     removeTask,
+    removeMany,
+    restoreTask,
     carryOverToTomorrow,
   } = useTasks();
 
@@ -112,7 +245,19 @@ export default function Home() {
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const [openSwipeId, setOpenSwipeId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{
+    message: string;
+    action?: { label: string; fn: () => void };
+  } | null>(null);
+
+  // Тост сам зникає за 5 c.
+  useEffect(() => {
+    if (!toast) return;
+    const id = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(id);
+  }, [toast]);
 
   const speech = useSpeech((chunk) => {
     setDraft((prev) => (prev ? `${prev} ${chunk}` : chunk));
@@ -167,13 +312,30 @@ export default function Home() {
     (t) => t.scheduledDate && t.scheduledDate < today
   );
 
+  function closeCapture() {
+    if (speech.listening) speech.stop();
+    setCaptureOpen(false);
+    setError(null);
+  }
+
+  function handleRemove(id: string) {
+    const task = tasks.find((t) => t.id === id);
+    setOpenSwipeId(null);
+    removeTask(id);
+    if (task) {
+      setToast({
+        message: "Задачу видалено",
+        action: { label: "Скасувати", fn: () => restoreTask(task) },
+      });
+    }
+  }
+
   async function handleParse() {
     const text = draft.trim();
     if (!text || loading) return;
     if (speech.listening) speech.stop();
     setLoading(true);
     setError(null);
-    setNotice(null);
     try {
       const res = await fetch("/api/parse", {
         method: "POST",
@@ -187,7 +349,9 @@ export default function Home() {
         setError("Не вдалося виділити задачі. Спробуй сформулювати конкретніше.");
         return;
       }
-      const n = addParsed(parsed);
+      const created = addParsed(parsed);
+      const n = created.length;
+      const ids = created.map((c) => c.id);
       type P = { scheduleToday: boolean; dueDate: string | null };
       const landedToday = (parsed as P[]).filter(
         (p) => p.scheduleToday || p.dueDate === today
@@ -196,10 +360,13 @@ export default function Home() {
         (p) => !p.scheduleToday && p.dueDate && p.dueDate > today
       );
       setDraft("");
-      setNotice(
-        `Додано ${n} ${plural(n, "задачу", "задачі", "задач")}` +
-          (landedToday ? ` · ${landedToday} на сьогодні` : "")
-      );
+      setCaptureOpen(false);
+      setToast({
+        message:
+          `Додано ${n} ${plural(n, "задачу", "задачі", "задач")}` +
+          (landedToday ? ` · ${landedToday} на сьогодні` : ""),
+        action: { label: "Скасувати", fn: () => removeMany(ids) },
+      });
       setTab(landedToday > 0 ? "today" : hasFuture ? "week" : "inbox");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Щось пішло не так.");
@@ -211,7 +378,9 @@ export default function Home() {
   function handleCarryOver() {
     const n = carryOverToTomorrow();
     if (n > 0)
-      setNotice(`Перенесено ${n} ${plural(n, "задачу", "задачі", "задач")} на завтра.`);
+      setToast({
+        message: `Перенесено ${n} ${plural(n, "задачу", "задачі", "задач")} на завтра.`,
+      });
   }
 
   const dateLabel = new Date().toLocaleDateString("uk-UA", {
@@ -221,55 +390,20 @@ export default function Home() {
   });
 
   return (
+    <SwipeCtx.Provider value={{ openId: openSwipeId, setOpenId: setOpenSwipeId }}>
     <div className="app">
       <div className="header">
         <h1>
-          {tab === "today" ? "Сьогодні" : tab === "week" ? "Тиждень" : "Вхідні"}
+          {tab === "today"
+            ? "Сьогодні"
+            : tab === "week"
+            ? "Наступні 7 днів"
+            : "Незаплановане"}
         </h1>
         <div className="date">{dateLabel}</div>
       </div>
 
       <div className="content">
-        {/* CAPTURE */}
-        <div className="capture">
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Що в голові? Вивали все підряд — AI розкладе по задачах…"
-          />
-          <div className="capture-actions">
-            {speech.supported && (
-              <button
-                className={`mic-btn ${speech.listening ? "on" : ""}`}
-                onClick={speech.toggle}
-                aria-label="Голосовий ввід"
-                type="button"
-              >
-                <Mic />
-              </button>
-            )}
-            <button
-              className="primary-btn"
-              onClick={handleParse}
-              disabled={loading || !draft.trim()}
-              type="button"
-            >
-              {loading ? <span className="spinner" /> : "Розібрати на задачі"}
-            </button>
-          </div>
-          {speech.listening && (
-            <div className="hint">🎙️ Слухаю… говори, потім тапни «Розібрати».</div>
-          )}
-          {speech.error && <div className="error">{speech.error}</div>}
-          {error && <div className="error">{error}</div>}
-          {notice && <div className="hint">✅ {notice}</div>}
-          {!speech.supported && (
-            <div className="hint">
-              Голос недоступний у цьому браузері — пиши текстом.
-            </div>
-          )}
-        </div>
-
         {!loaded ? null : tab === "today" ? (
           <TodayView
             active={todayActive}
@@ -280,7 +414,7 @@ export default function Home() {
             overdue={overdue}
             onToggle={toggleDone}
             onInbox={moveToInbox}
-            onRemove={removeTask}
+            onRemove={handleRemove}
             onCarryOver={handleCarryOver}
           />
         ) : tab === "week" ? (
@@ -288,7 +422,7 @@ export default function Home() {
             week={week}
             tasksByDay={tasksByDay}
             onToggle={toggleDone}
-            onRemove={removeTask}
+            onRemove={handleRemove}
             onMove={moveToDate}
           />
         ) : (
@@ -296,7 +430,7 @@ export default function Home() {
             inbox={inbox}
             onSchedule={scheduleToday}
             onToggle={toggleDone}
-            onRemove={removeTask}
+            onRemove={handleRemove}
           />
         )}
       </div>
@@ -332,7 +466,101 @@ export default function Home() {
           Вхідні
         </button>
       </nav>
+
+      {/* Головна дія — у зоні великого пальця */}
+      {!captureOpen && (
+        <button
+          className="fab"
+          onClick={() => setCaptureOpen(true)}
+          type="button"
+          aria-label="Новий запис — вивалити думки"
+        >
+          <Plus />
+          Записати
+        </button>
+      )}
+
+      {toast && (
+        <div className="toast" role="status">
+          <span>{toast.message}</span>
+          {toast.action && (
+            <button
+              className="toast-action"
+              type="button"
+              onClick={() => {
+                toast.action!.fn();
+                setToast(null);
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Нижня шторка: brain dump у зоні великого пальця */}
+      {captureOpen && (
+        <>
+          <div className="sheet-backdrop" onClick={closeCapture} />
+          <div
+            className="sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Новий запис"
+          >
+            <div className="sheet-grabber" />
+            <div className="sheet-head">
+              <div className="sheet-title">Що в голові?</div>
+              <button
+                className="sheet-close"
+                onClick={closeCapture}
+                aria-label="Закрити"
+                type="button"
+              >
+                <Close />
+              </button>
+            </div>
+            <textarea
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="Вивали все підряд — AI розкладе по задачах…"
+            />
+            <div className="capture-actions">
+              {speech.supported && (
+                <button
+                  className={`mic-btn ${speech.listening ? "on" : ""}`}
+                  onClick={speech.toggle}
+                  aria-label="Голосовий ввід"
+                  type="button"
+                >
+                  <Mic />
+                </button>
+              )}
+              <button
+                className="primary-btn"
+                onClick={handleParse}
+                disabled={loading || !draft.trim()}
+                type="button"
+              >
+                {loading ? <span className="spinner" /> : "Розібрати на задачі"}
+              </button>
+            </div>
+            {speech.listening && (
+              <div className="hint">🎙️ Слухаю… говори, потім тапни «Розібрати».</div>
+            )}
+            {speech.error && <div className="error">{speech.error}</div>}
+            {error && <div className="error">{error}</div>}
+            {!speech.supported && (
+              <div className="hint">
+                Голос недоступний у цьому браузері — пиши текстом.
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
+    </SwipeCtx.Provider>
   );
 }
 
@@ -368,7 +596,7 @@ function TodayView(props: {
         <div className="big">☀️</div>
         <div className="t">План на сьогодні порожній</div>
         <div className="s">
-          Вивали думки вгорі або познач задачі з «Вхідних» на сьогодні.
+          Тапни «＋ Записати» внизу або познач задачі з «Вхідних» на сьогодні.
         </div>
       </div>
     );
@@ -382,9 +610,9 @@ function TodayView(props: {
           <span>
             {overdue.length} {plural(overdue.length, "задача", "задачі", "задач")}{" "}
             прострочено.{" "}
-            <span className="link" onClick={onCarryOver} role="button">
+            <button className="link-btn" onClick={onCarryOver} type="button">
               Перенести на завтра
-            </span>
+            </button>
           </span>
         </div>
       )}
@@ -450,7 +678,7 @@ function InboxView(props: {
       <div className="empty">
         <div className="big">📥</div>
         <div className="t">Вхідні порожні</div>
-        <div className="s">Усе розібрано. Вивали нові думки вгорі.</div>
+        <div className="s">Усе розібрано. Нові думки — кнопкою «＋ Записати» внизу.</div>
       </div>
     );
   }
@@ -548,67 +776,50 @@ function WeekTaskRow(props: {
   const done = t.status === "done";
   const pClass = t.priority <= 3 ? `p${t.priority}` : "";
   return (
-    <div className={`task week-task ${done ? "completed" : ""}`}>
-      <button
-        className={`checkbox ${done ? "done" : pClass}`}
-        onClick={() => onToggle(t.id)}
-        aria-label={done ? "Позначити невиконаною" : "Виконати"}
-        type="button"
-      >
-        {done && <Check />}
-      </button>
-      <div className="task-body">
-        <div className="task-title">{t.title}</div>
-        <div className="task-meta">
-          {t.priority <= 3 && (
-            <span
-              className="meta-chip"
-              style={{ color: PRIORITY_META[t.priority as Priority].color }}
-            >
-              {PRIORITY_META[t.priority as Priority].short}
-            </span>
-          )}
-          {t.estimateMinutes != null && (
-            <span className="meta-chip">🕐 {fmtMinutes(t.estimateMinutes)}</span>
-          )}
-          {t.tags.map((tag) => (
-            <span className="tag" key={tag}>
-              #{tag}
-            </span>
-          ))}
-        </div>
-      </div>
-      <div className="task-side">
-        <select
-          className="day-select"
-          value={t.scheduledDate ?? ""}
-          onChange={(e) => onMove(t.id, e.target.value)}
-          aria-label="Перенести на день"
-        >
-          {week.map((d) => (
-            <option key={d.iso} value={d.iso}>
-              {d.label}
-            </option>
-          ))}
-        </select>
+    <SwipeToDelete id={t.id} onDelete={() => onRemove(t.id)}>
+      <div className={`task week-task ${done ? "completed" : ""}`}>
         <button
-          className="icon-btn"
-          onClick={() => onRemove(t.id)}
-          aria-label="Видалити"
+          className={`checkbox ${done ? "done" : pClass}`}
+          onClick={() => onToggle(t.id)}
+          aria-label={done ? "Позначити невиконаною" : "Виконати"}
           type="button"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M6 7h12M9 7V5h6v2m-8 0l1 13h8l1-13"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+          {done && <Check />}
         </button>
+        <div className="task-body">
+          <div className="task-title">{t.title}</div>
+          <div className="task-meta">
+            {t.priority <= 3 && (
+              <span className={`meta-chip p${t.priority}`}>
+                {PRIORITY_META[t.priority as Priority].short}
+              </span>
+            )}
+            {t.estimateMinutes != null && (
+              <span className="meta-chip">🕐 {fmtMinutes(t.estimateMinutes)}</span>
+            )}
+            {t.tags.map((tag) => (
+              <span className="tag" key={tag}>
+                #{tag}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="task-side">
+          <select
+            className="day-select"
+            value={t.scheduledDate ?? ""}
+            onChange={(e) => onMove(t.id, e.target.value)}
+            aria-label="Перенести на день"
+          >
+            {week.map((d) => (
+              <option key={d.iso} value={d.iso}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
-    </div>
+    </SwipeToDelete>
   );
 }
 
@@ -620,80 +831,60 @@ function TaskRow(props: {
   secondaryAction?: { label: string; fn: () => void };
   primaryHighlight?: boolean;
 }) {
-  const { task: t, onToggle, onRemove, secondaryAction } = props;
+  const { task: t, onToggle, onRemove, secondaryAction, primaryHighlight } = props;
   const done = t.status === "done";
   const pClass = t.priority <= 3 ? `p${t.priority}` : "";
   return (
-    <div className={`task ${done ? "completed" : ""}`}>
-      <button
-        className={`checkbox ${done ? "done" : pClass}`}
-        onClick={() => onToggle(t.id)}
-        aria-label={done ? "Позначити невиконаною" : "Виконати"}
-        type="button"
-      >
-        {done && <Check />}
-      </button>
-
-      <div className="task-body">
-        <div className="task-title">{t.title}</div>
-        <div className="task-meta">
-          {t.priority <= 3 && (
-            <span
-              className="meta-chip"
-              style={{ color: PRIORITY_META[t.priority as Priority].color }}
-            >
-              {PRIORITY_META[t.priority as Priority].short}
-            </span>
-          )}
-          {t.estimateMinutes != null && (
-            <span className="meta-chip">🕐 {fmtMinutes(t.estimateMinutes)}</span>
-          )}
-          {t.dueDate && (
-            <span
-              className={`meta-chip ${
-                t.dueDate <= todayStr() ? "due" : ""
-              }`}
-            >
-              📅 {fmtDate(t.dueDate)}
-            </span>
-          )}
-          {t.tags.map((tag) => (
-            <span className="tag" key={tag}>
-              #{tag}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="task-side">
-        {secondaryAction && !done && (
-          <button
-            className="icon-btn"
-            style={{ width: "auto", padding: "0 10px", fontSize: 12, fontWeight: 600 }}
-            onClick={secondaryAction.fn}
-            type="button"
-          >
-            {secondaryAction.label}
-          </button>
-        )}
+    <SwipeToDelete id={t.id} onDelete={() => onRemove(t.id)}>
+      <div className={`task ${done ? "completed" : ""}`}>
         <button
-          className="icon-btn"
-          onClick={() => onRemove(t.id)}
-          aria-label="Видалити"
+          className={`checkbox ${done ? "done" : pClass}`}
+          onClick={() => onToggle(t.id)}
+          aria-label={done ? "Позначити невиконаною" : "Виконати"}
           type="button"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M6 7h12M9 7V5h6v2m-8 0l1 13h8l1-13"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+          {done && <Check />}
         </button>
+
+        <div className="task-body">
+          <div className="task-title">{t.title}</div>
+          <div className="task-meta">
+            {t.priority <= 3 && (
+              <span className={`meta-chip p${t.priority}`}>
+                {PRIORITY_META[t.priority as Priority].short}
+              </span>
+            )}
+            {t.estimateMinutes != null && (
+              <span className="meta-chip">🕐 {fmtMinutes(t.estimateMinutes)}</span>
+            )}
+            {t.dueDate && (
+              <span
+                className={`meta-chip ${t.dueDate <= todayStr() ? "due" : ""}`}
+              >
+                📅 {fmtDate(t.dueDate)}
+              </span>
+            )}
+            {t.tags.map((tag) => (
+              <span className="tag" key={tag}>
+                #{tag}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {secondaryAction && !done && (
+          <div className="task-side">
+            <button
+              className={`row-action ${primaryHighlight ? "accent" : ""}`}
+              onClick={secondaryAction.fn}
+              type="button"
+            >
+              {secondaryAction.label}
+            </button>
+          </div>
+        )}
       </div>
-    </div>
+    </SwipeToDelete>
   );
 }
 

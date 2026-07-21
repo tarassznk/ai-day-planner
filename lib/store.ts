@@ -74,7 +74,7 @@ export function useTasks() {
       };
     });
     setTasks((prev) => [...created, ...prev]);
-    return created.length;
+    return created;
   }, []);
 
   const toggleDone = useCallback((id: string) => {
@@ -132,6 +132,19 @@ export function useTasks() {
     setTasks((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  // Прибрати кілька задач за id (для undo після AI-парсингу).
+  const removeMany = useCallback((ids: string[]) => {
+    const set = new Set(ids);
+    setTasks((prev) => prev.filter((t) => !set.has(t.id)));
+  }, []);
+
+  // Повернути видалену задачу (для undo). Не дублюємо, якщо вже є.
+  const restoreTask = useCallback((task: Task) => {
+    setTasks((prev) =>
+      prev.some((t) => t.id === task.id) ? prev : [task, ...prev]
+    );
+  }, []);
+
   // Перенести невиконані задачі з сьогодні (і раніше) на завтра.
   const carryOverToTomorrow = useCallback(() => {
     const today = todayStr();
@@ -163,6 +176,8 @@ export function useTasks() {
     moveToDate,
     updateTask,
     removeTask,
+    removeMany,
+    restoreTask,
     carryOverToTomorrow,
   };
 }

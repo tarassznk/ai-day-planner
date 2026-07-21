@@ -10,8 +10,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  themeColor: "#e44332",
+  // Зум навмисно НЕ обмежуємо (доступність): користувач може збільшувати сторінку.
+  themeColor: "#4f46e5",
 };
 
 export default function RootLayout({
