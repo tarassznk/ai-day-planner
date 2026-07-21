@@ -72,17 +72,20 @@ const EXTRACT_TOOL: Anthropic.Tool = {
   },
 };
 
-function systemPrompt(today: string, weekday: string): string {
+function systemPrompt(today: string, weekday: string, dateRef: string): string {
   return `Ти — розумний планувальник задач. Користувач диктує або пише все, що в нього в голові, суцільним потоком. Твоя робота — перетворити цей хаос на чіткий список окремих задач.
 
 Сьогодні: ${today} (${weekday}).
+
+Довідник дат (використовуй ТІЛЬКИ його для дедлайнів — не рахуй дати самостійно):
+${dateRef}
 
 Правила:
 - Розбивай текст на ОКРЕМІ атомарні задачі. Одне речення може містити кілька задач — розділяй їх.
 - Формулюй кожну задачу коротко, як дію ("Подзвонити стоматологу", а не "треба десь подзвонити зубному напевно").
 - Пріоритет став за змістом: дедлайни, слова "терміново", "важливо", "не забути" → вищий пріоритет.
-- Оцінюй час реалістично у хвилинах. Дрібна дія ~15 хв, зустріч ~60 хв. Якщо взагалі незрозуміло — null.
-- Відносні дати ("завтра", "у понеділок", "до пʼятниці") перетворюй на конкретну YYYY-MM-DD, відштовхуючись від сьогоднішньої дати.
+- Оцінюй час реалістично у хвилинах. Дрібна дія ~15 хв, зустріч ~60 хв. Якщо взагалі незрозуміло — 0.
+- Відносні дати ("завтра", "у понеділок", "до пʼятниці") бери ВИКЛЮЧНО з довідника дат вище і став у форматі YYYY-MM-DD. Якщо дедлайну немає — порожній рядок.
 - Не вигадуй задач, яких немає в тексті. Не додавай пояснень — лише виклик інструменту.
 - Якщо текст порожній або без задач — поверни порожній масив tasks.`;
 }
@@ -113,10 +116,20 @@ export async function POST(req: NextRequest) {
     const today = now.toISOString().slice(0, 10);
     const weekday = now.toLocaleDateString("uk-UA", { weekday: "long" });
 
+    // Готовий довідник дат на 14 днів наперед — щоб модель не рахувала сама.
+    const dateRef = Array.from({ length: 14 }, (_, i) => {
+      const d = new Date(now);
+      d.setDate(d.getDate() + i);
+      const iso = d.toISOString().slice(0, 10);
+      const wd = d.toLocaleDateString("uk-UA", { weekday: "long" });
+      const label = i === 0 ? "сьогодні" : i === 1 ? "завтра" : wd;
+      return `${iso} — ${label}`;
+    }).join("\n");
+
     const message = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 2048,
-      system: systemPrompt(today, weekday),
+      system: systemPrompt(today, weekday, dateRef),
       tools: [EXTRACT_TOOL],
       tool_choice: { type: "tool", name: "extract_tasks" },
       messages: [{ role: "user", content: text }],

@@ -10,7 +10,33 @@ import {
   type Priority,
 } from "@/lib/types";
 
-type Tab = "today" | "inbox";
+type Tab = "today" | "week" | "inbox";
+
+interface WeekDay {
+  iso: string;
+  label: string; // Сьогодні / Завтра / Понеділок…
+  dateLabel: string; // 21 лип.
+}
+
+function buildWeek(): WeekDay[] {
+  const base = new Date();
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(base);
+    d.setDate(d.getDate() + i);
+    const iso = d.toISOString().slice(0, 10);
+    const wd = d.toLocaleDateString("uk-UA", { weekday: "long" });
+    const label = i === 0 ? "Сьогодні" : i === 1 ? "Завтра" : cap(wd);
+    const dateLabel = d.toLocaleDateString("uk-UA", {
+      day: "numeric",
+      month: "short",
+    });
+    return { iso, label, dateLabel };
+  });
+}
+
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 // ---- дрібні хелпери ----
 function fmtDate(iso: string): string {
@@ -77,6 +103,7 @@ export default function Home() {
     toggleDone,
     scheduleToday,
     moveToInbox,
+    moveToDate,
     removeTask,
     carryOverToTomorrow,
   } = useTasks();
@@ -111,6 +138,19 @@ export default function Home() {
     () => sortTasks(tasks.filter((t) => t.status === "inbox")),
     [tasks]
   );
+
+  const week = useMemo(() => buildWeek(), []);
+  const tasksByDay = useMemo(() => {
+    const map: Record<string, Task[]> = {};
+    for (const d of week) map[d.iso] = [];
+    for (const t of tasks) {
+      if (t.scheduledDate && map[t.scheduledDate]) {
+        map[t.scheduledDate].push(t);
+      }
+    }
+    for (const iso of Object.keys(map)) map[iso] = sortTasks(map[iso]);
+    return map;
+  }, [tasks, week]);
 
   // Реалістичність плану
   const plannedMinutes = todayActive.reduce(
@@ -148,14 +188,19 @@ export default function Home() {
         return;
       }
       const n = addParsed(parsed);
-      const toToday = parsed.filter((p: { scheduleToday: boolean }) => p.scheduleToday)
-        .length;
+      type P = { scheduleToday: boolean; dueDate: string | null };
+      const landedToday = (parsed as P[]).filter(
+        (p) => p.scheduleToday || p.dueDate === today
+      ).length;
+      const hasFuture = (parsed as P[]).some(
+        (p) => !p.scheduleToday && p.dueDate && p.dueDate > today
+      );
       setDraft("");
       setNotice(
         `Додано ${n} ${plural(n, "задачу", "задачі", "задач")}` +
-          (toToday ? ` · ${toToday} на сьогодні` : "")
+          (landedToday ? ` · ${landedToday} на сьогодні` : "")
       );
-      setTab(toToday >= n - toToday ? "today" : "inbox");
+      setTab(landedToday > 0 ? "today" : hasFuture ? "week" : "inbox");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Щось пішло не так.");
     } finally {
@@ -178,7 +223,9 @@ export default function Home() {
   return (
     <div className="app">
       <div className="header">
-        <h1>{tab === "today" ? "Сьогодні" : "Вхідні"}</h1>
+        <h1>
+          {tab === "today" ? "Сьогодні" : tab === "week" ? "Тиждень" : "Вхідні"}
+        </h1>
         <div className="date">{dateLabel}</div>
       </div>
 
@@ -236,6 +283,14 @@ export default function Home() {
             onRemove={removeTask}
             onCarryOver={handleCarryOver}
           />
+        ) : tab === "week" ? (
+          <WeekView
+            week={week}
+            tasksByDay={tasksByDay}
+            onToggle={toggleDone}
+            onRemove={removeTask}
+            onMove={moveToDate}
+          />
         ) : (
           <InboxView
             inbox={inbox}
@@ -258,6 +313,14 @@ export default function Home() {
           )}
           <TabIcon kind="today" />
           Сьогодні
+        </button>
+        <button
+          className={`tab ${tab === "week" ? "active" : ""}`}
+          onClick={() => setTab("week")}
+          type="button"
+        >
+          <TabIcon kind="week" />
+          Тиждень
         </button>
         <button
           className={`tab ${tab === "inbox" ? "active" : ""}`}
@@ -410,6 +473,145 @@ function InboxView(props: {
   );
 }
 
+// ---- Week ----
+function WeekView(props: {
+  week: WeekDay[];
+  tasksByDay: Record<string, Task[]>;
+  onToggle: (id: string) => void;
+  onRemove: (id: string) => void;
+  onMove: (id: string, date: string) => void;
+}) {
+  const { week, tasksByDay, onToggle, onRemove, onMove } = props;
+  const total = week.reduce((s, d) => s + tasksByDay[d.iso].length, 0);
+
+  if (total === 0) {
+    return (
+      <div className="empty">
+        <div className="big">🗓️</div>
+        <div className="t">Тиждень порожній</div>
+        <div className="s">
+          Заплануй задачі на сьогодні або признач їх на потрібний день.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="summary">Розклад на 7 днів. Задачі можна переносити між днями.</div>
+      {week.map((day) => {
+        const list = tasksByDay[day.iso];
+        const active = list.filter((t) => t.status !== "done");
+        const mins = active.reduce((s, t) => s + (t.estimateMinutes ?? 0), 0);
+        return (
+          <div key={day.iso} className="week-day">
+            <div className="week-day-head">
+              <span>
+                {day.label} <span className="wd-date">· {day.dateLabel}</span>
+              </span>
+              {list.length > 0 && (
+                <span className="wd-count">
+                  {list.length}
+                  {mins > 0 ? ` · ~${fmtMinutes(mins)}` : ""}
+                </span>
+              )}
+            </div>
+            {list.length === 0 ? (
+              <div className="week-empty">Вільно</div>
+            ) : (
+              list.map((t) => (
+                <WeekTaskRow
+                  key={t.id}
+                  task={t}
+                  week={week}
+                  onToggle={onToggle}
+                  onRemove={onRemove}
+                  onMove={onMove}
+                />
+              ))
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function WeekTaskRow(props: {
+  task: Task;
+  week: WeekDay[];
+  onToggle: (id: string) => void;
+  onRemove: (id: string) => void;
+  onMove: (id: string, date: string) => void;
+}) {
+  const { task: t, week, onToggle, onRemove, onMove } = props;
+  const done = t.status === "done";
+  const pClass = t.priority <= 3 ? `p${t.priority}` : "";
+  return (
+    <div className={`task week-task ${done ? "completed" : ""}`}>
+      <button
+        className={`checkbox ${done ? "done" : pClass}`}
+        onClick={() => onToggle(t.id)}
+        aria-label={done ? "Позначити невиконаною" : "Виконати"}
+        type="button"
+      >
+        {done && <Check />}
+      </button>
+      <div className="task-body">
+        <div className="task-title">{t.title}</div>
+        <div className="task-meta">
+          {t.priority <= 3 && (
+            <span
+              className="meta-chip"
+              style={{ color: PRIORITY_META[t.priority as Priority].color }}
+            >
+              {PRIORITY_META[t.priority as Priority].short}
+            </span>
+          )}
+          {t.estimateMinutes != null && (
+            <span className="meta-chip">🕐 {fmtMinutes(t.estimateMinutes)}</span>
+          )}
+          {t.tags.map((tag) => (
+            <span className="tag" key={tag}>
+              #{tag}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="task-side">
+        <select
+          className="day-select"
+          value={t.scheduledDate ?? ""}
+          onChange={(e) => onMove(t.id, e.target.value)}
+          aria-label="Перенести на день"
+        >
+          {week.map((d) => (
+            <option key={d.iso} value={d.iso}>
+              {d.label}
+            </option>
+          ))}
+        </select>
+        <button
+          className="icon-btn"
+          onClick={() => onRemove(t.id)}
+          aria-label="Видалити"
+          type="button"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M6 7h12M9 7V5h6v2m-8 0l1 13h8l1-13"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ---- рядок задачі ----
 function TaskRow(props: {
   task: Task;
@@ -495,7 +697,7 @@ function TaskRow(props: {
   );
 }
 
-function TabIcon({ kind }: { kind: "today" | "inbox" }) {
+function TabIcon({ kind }: { kind: "today" | "week" | "inbox" }) {
   if (kind === "today")
     return (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
@@ -510,6 +712,27 @@ function TabIcon({ kind }: { kind: "today" | "inbox" }) {
         />
         <path
           d="M3 9h18M8 2v4M16 2v4"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+        <rect x="6.5" y="12" width="4" height="4" rx="1" fill="currentColor" />
+      </svg>
+    );
+  if (kind === "week")
+    return (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <rect
+          x="3"
+          y="4"
+          width="18"
+          height="17"
+          rx="3"
+          stroke="currentColor"
+          strokeWidth="2"
+        />
+        <path
+          d="M3 9h18M8 2v4M16 2v4M7 13h10M7 17h6"
           stroke="currentColor"
           strokeWidth="2"
           strokeLinecap="round"

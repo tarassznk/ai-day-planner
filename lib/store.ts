@@ -54,19 +54,25 @@ export function useTasks() {
 
   const addParsed = useCallback((parsed: ParsedTask[]) => {
     const now = new Date().toISOString();
-    const created: Task[] = parsed.map((p) => ({
-      id: newId(),
-      title: p.title,
-      priority: p.priority,
-      estimateMinutes: p.estimateMinutes,
-      dueDate: p.dueDate,
-      scheduledDate: p.scheduleToday ? todayStr() : null,
-      status: p.scheduleToday ? "planned" : "inbox",
-      tags: p.tags,
-      notes: "",
-      createdAt: now,
-      completedAt: null,
-    }));
+    const today = todayStr();
+    const created: Task[] = parsed.map((p) => {
+      // Логіка планування: "сьогодні" → сьогодні; є дедлайн → на день дедлайну
+      // (як у Todoist); інакше — у Вхідні як недатований беклог.
+      const scheduledDate = p.scheduleToday ? today : p.dueDate ?? null;
+      return {
+        id: newId(),
+        title: p.title,
+        priority: p.priority,
+        estimateMinutes: p.estimateMinutes,
+        dueDate: p.dueDate,
+        scheduledDate,
+        status: scheduledDate ? "planned" : "inbox",
+        tags: p.tags,
+        notes: "",
+        createdAt: now,
+        completedAt: null,
+      };
+    });
     setTasks((prev) => [...created, ...prev]);
     return created.length;
   }, []);
@@ -99,6 +105,21 @@ export function useTasks() {
     setTasks((prev) =>
       prev.map((t) =>
         t.id === id ? { ...t, scheduledDate: null, status: "inbox" } : t
+      )
+    );
+  }, []);
+
+  // Перенести задачу на конкретний день (для тижневого розкладу).
+  const moveToDate = useCallback((id: string, date: string) => {
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              scheduledDate: date,
+              status: t.status === "done" ? "done" : "planned",
+            }
+          : t
       )
     );
   }, []);
@@ -139,6 +160,7 @@ export function useTasks() {
     toggleDone,
     scheduleToday,
     moveToInbox,
+    moveToDate,
     updateTask,
     removeTask,
     carryOverToTomorrow,

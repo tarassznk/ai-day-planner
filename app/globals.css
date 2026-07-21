@@ -368,6 +368,50 @@ textarea {
   padding: 0 4px;
 }
 
+/* ===== Тижневий розклад ===== */
+.week-day {
+  margin-bottom: 16px;
+}
+.week-day-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 6px 4px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 700;
+  font-size: 15px;
+}
+.wd-date {
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 13px;
+}
+.wd-count {
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 12px;
+}
+.week-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 4px 4px 8px;
+  font-style: italic;
+}
+.week-task {
+  padding: 10px 12px;
+}
+.day-select {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border-radius: 8px;
+  font-size: 12px;
+  padding: 5px 6px;
+  max-width: 104px;
+  outline: none;
+}
+
 /* Легкий спінер */
 .spinner {
   width: 16px;
