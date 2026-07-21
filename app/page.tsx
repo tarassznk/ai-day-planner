@@ -90,7 +90,7 @@ const Check = () => (
   </svg>
 );
 const Mic = () => (
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
     <rect x="9" y="3" width="6" height="12" rx="3" fill="currentColor" />
     <path
       d="M5 11a7 7 0 0014 0M12 18v3"
