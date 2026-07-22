@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { ParsedTask, Task } from "./types";
+import { todayStr, tomorrowStr } from "./date";
+
+// Реекспорт — щоб наявні імпорти `from "@/lib/store"` не ламались.
+export { todayStr, tomorrowStr };
 
 const STORAGE_KEY = "ai-day-planner:tasks:v1";
 const SETTINGS_KEY = "ai-day-planner:settings:v1";
@@ -12,16 +16,6 @@ export interface Settings {
   dayEnd: string;
 }
 const DEFAULT_SETTINGS: Settings = { dayStart: "09:00", dayEnd: "18:00" };
-
-export function todayStr(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-export function tomorrowStr(): string {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
 
 function newId(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -208,7 +202,8 @@ export function useTasks() {
     );
   }, []);
 
-  // Перенести невиконані задачі з сьогодні (і раніше) на завтра.
+  // Перенести ПРОСТРОЧЕНІ задачі (заплановані на минулі дні) на завтра.
+  // Сьогоднішні не чіпаємо — для них є ручні дії «→ Завтра» на кожній задачі.
   const carryOverToTomorrow = useCallback(() => {
     const today = todayStr();
     const tmr = tomorrowStr();
@@ -218,7 +213,7 @@ export function useTasks() {
         if (
           t.status === "planned" &&
           t.scheduledDate &&
-          t.scheduledDate <= today
+          t.scheduledDate < today
         ) {
           moved++;
           return { ...t, scheduledDate: tmr };

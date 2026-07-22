@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
+import { coerceTime, MAX_INPUT_CHARS } from "@/lib/parse-utils";
 
 // Перепланування з обмеженнями. AI РОБИТЬ ЛИШЕ ОДНЕ: перетворює вільний текст
 // («у мене зустрічі 14–16, після обіду не можу») на список зайнятих інтервалів.
@@ -43,16 +44,6 @@ const BUSY_TOOL: Anthropic.Tool = {
   },
 };
 
-function coerceTime(t: unknown): string | null {
-  if (typeof t !== "string") return null;
-  const m = t.trim().match(/^(\d{1,2}):?(\d{2})?$/);
-  if (!m) return null;
-  const h = Number(m[1]);
-  const min = m[2] ? Number(m[2]) : 0;
-  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
-  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
-}
-
 export async function POST(req: NextRequest) {
   try {
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -64,6 +55,14 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const text: string = (body?.text ?? "").toString().trim();
     if (!text) return NextResponse.json({ busy: [] });
+    if (text.length > MAX_INPUT_CHARS) {
+      return NextResponse.json(
+        {
+          error: `Забагато тексту (макс. ${MAX_INPUT_CHARS} символів). Скороти опис.`,
+        },
+        { status: 400 }
+      );
+    }
 
     const message = await anthropic.messages.create({
       model: MODEL,

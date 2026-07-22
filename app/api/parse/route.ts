@@ -1,6 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import type { ParsedTask, Priority } from "@/lib/types";
+import { isoLocal, coerceDate } from "@/lib/date";
+import { coerceTime, MAX_INPUT_CHARS } from "@/lib/parse-utils";
 
 // Ключ живе ТІЛЬКИ тут, на сервері (Vercel env). У браузер не потрапляє.
 const anthropic = new Anthropic({
@@ -103,17 +105,6 @@ function coercePriority(p: unknown): Priority {
   return 4;
 }
 
-// Нормалізуємо час до "HH:MM" (24 год). Невалідне → null.
-function coerceTime(t: unknown): string | null {
-  if (typeof t !== "string") return null;
-  const m = t.trim().match(/^(\d{1,2}):?(\d{2})?$/);
-  if (!m) return null;
-  let h = Number(m[1]);
-  const min = m[2] ? Number(m[2]) : 0;
-  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
-  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
-}
-
 export async function POST(req: NextRequest) {
   try {
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -129,16 +120,27 @@ export async function POST(req: NextRequest) {
     if (!text) {
       return NextResponse.json({ tasks: [] });
     }
+    if (text.length > MAX_INPUT_CHARS) {
+      return NextResponse.json(
+        {
+          error: `Забагато тексту (макс. ${MAX_INPUT_CHARS} символів). Скороти запис.`,
+        },
+        { status: 400 }
+      );
+    }
 
-    const now = new Date();
-    const today = now.toISOString().slice(0, 10);
-    const weekday = now.toLocaleDateString("uk-UA", { weekday: "long" });
+    // Якір "сьогодні" дає КЛІЄНТ (його локальний день). Інакше сервер може бути
+    // в іншому поясі (Vercel = UTC) і зсунути всі дедлайни на добу.
+    const clientToday = coerceDate(body?.today);
+    const anchor = clientToday ? new Date(`${clientToday}T00:00:00`) : new Date();
+    const today = isoLocal(anchor);
+    const weekday = anchor.toLocaleDateString("uk-UA", { weekday: "long" });
 
     // Готовий довідник дат на 14 днів наперед — щоб модель не рахувала сама.
     const dateRef = Array.from({ length: 14 }, (_, i) => {
-      const d = new Date(now);
-      d.setDate(d.getDate() + i);
-      const iso = d.toISOString().slice(0, 10);
+      const d = new Date(anchor);
+      d.setDate(anchor.getDate() + i);
+      const iso = isoLocal(d);
       const wd = d.toLocaleDateString("uk-UA", { weekday: "long" });
       const mark = i === 0 ? " (сьогодні)" : i === 1 ? " (завтра)" : "";
       return `${iso} — ${wd}${mark}`;
@@ -176,10 +178,7 @@ export async function POST(req: NextRequest) {
             typeof estimate === "number" && estimate > 0
               ? Math.round(estimate)
               : null,
-          dueDate:
-            typeof item?.dueDate === "string" && item.dueDate.trim()
-              ? item.dueDate.trim()
-              : null,
+          dueDate: coerceDate(item?.dueDate),
           startTime: coerceTime(item?.startTime),
           tags: Array.isArray(item?.tags)
             ? (item.tags as unknown[])

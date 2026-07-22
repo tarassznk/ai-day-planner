@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { useTasks, useSettings, todayStr, tomorrowStr } from "@/lib/store";
+import { isoLocal } from "@/lib/date";
 import { useSpeech } from "@/lib/useSpeech";
 import {
   buildTimeline,
@@ -21,6 +22,7 @@ import {
   type WorkdayOptions,
 } from "@/lib/schedule";
 import { downloadIcs } from "@/lib/ics";
+import { plural } from "@/lib/text";
 import {
   PRIORITY_META,
   type Task,
@@ -38,20 +40,10 @@ function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-// Локальна дата → "YYYY-MM-DD" (без UTC-зсуву, щоб збігалося з scheduledDate).
-function isoLocal(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
 // ---- дрібні хелпери ----
 function fmtDate(iso: string): string {
   const today = todayStr();
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  const tmr = d.toISOString().slice(0, 10);
+  const tmr = tomorrowStr();
   if (iso === today) return "сьогодні";
   if (iso === tmr) return "завтра";
   if (iso < today) return "прострочено";
@@ -76,6 +68,37 @@ function sortTasks(list: Task[]): Task[] {
     if (b.dueDate) return 1;
     return a.createdAt.localeCompare(b.createdAt);
   });
+}
+
+// Скільки чекаємо на відповідь AI, перш ніж здатися (мс). Без цього при
+// «завислій» (не впалій) мережі спінер крутився б вічно.
+const REQUEST_TIMEOUT_MS = 20000;
+
+// POST JSON з таймаутом і людськими повідомленнями про офлайн/тайм-аут.
+async function postJson<T>(url: string, payload: unknown): Promise<T> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    throw new Error("Немає зʼєднання з інтернетом. Перевір мережу й спробуй ще.");
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || "Помилка сервера");
+    return data as T;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("Сервіс не відповів вчасно. Спробуй ще раз.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---- іконки ----
@@ -300,8 +323,17 @@ export default function Home() {
       ),
     [tasks, today]
   );
+  // «Виконано» = усе, що завершили саме СЬОГОДНІ (за completedAt), незалежно
+  // від того, на який день задача була запланована — інакше виконана
+  // прострочена задача зникала б з обох секцій.
   const todayDone = useMemo(
-    () => tasks.filter((t) => t.status === "done" && t.scheduledDate === today),
+    () =>
+      tasks.filter(
+        (t) =>
+          t.status === "done" &&
+          t.completedAt &&
+          isoLocal(new Date(t.completedAt)) === today
+      ),
     [tasks, today]
   );
   const inbox = useMemo(
@@ -387,13 +419,10 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+      const data = await postJson<{ tasks?: ParsedTask[] }>("/api/parse", {
+        text,
+        today,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Помилка сервера");
       const parsed: ParsedTask[] = data.tasks ?? [];
       if (parsed.length === 0) {
         setError("Не вдалося виділити задачі. Спробуй сформулювати конкретніше.");
@@ -468,13 +497,9 @@ export default function Home() {
     setReplanLoading(true);
     setReplanError(null);
     try {
-      const res = await fetch("/api/replan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+      const data = await postJson<{ busy?: BusyBlock[] }>("/api/replan", {
+        text,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Помилка сервера");
       const busy: BusyBlock[] = data.busy ?? [];
       if (busy.length === 0) {
         setReplanError("Не вдалося зрозуміти обмеження. Напр.: «зустрічі 14–16».");
@@ -1258,7 +1283,7 @@ function TodayView(props: {
         </div>
       )}
 
-      {rows.map((row) =>
+      {rows.map((row, i) =>
         row.kind === "task" ? (
           <TaskRow
             key={row.slot.task.id}
@@ -1274,7 +1299,7 @@ function TodayView(props: {
             }}
           />
         ) : (
-          <div className="busy-row" key={`busy-${row.start}`}>
+          <div className="busy-row" key={`busy-${i}-${row.start}`}>
             <div className="busy-row-time">
               {fmtTime(row.block.startMin)}–{fmtTime(row.block.endMin)}
             </div>
@@ -1674,13 +1699,4 @@ function TabIcon({ kind }: { kind: "today" | "calendar" | "inbox" }) {
       />
     </svg>
   );
-}
-
-// множина українською: 1 задача / 2-4 задачі / 5+ задач
-function plural(n: number, one: string, few: string, many: string): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
-  return many;
 }
