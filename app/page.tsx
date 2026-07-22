@@ -28,36 +28,22 @@ import {
   type ParsedTask,
 } from "@/lib/types";
 
-type Tab = "today" | "week" | "inbox";
+type Tab = "today" | "calendar" | "inbox";
 
 // Приклад швидкого старту на вітальному екрані — збігається з демо-сценарієм.
 const EXAMPLE_DUMP =
   "Підготувати квартальний звіт до пʼятниці, дзвінок із клієнтом о 15:00, сходити в спортзал, відповісти на пошту";
 
-interface WeekDay {
-  iso: string;
-  label: string; // Сьогодні / Завтра / Понеділок…
-  dateLabel: string; // 21 лип.
-}
-
-function buildWeek(): WeekDay[] {
-  const base = new Date();
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(base);
-    d.setDate(d.getDate() + i);
-    const iso = d.toISOString().slice(0, 10);
-    const wd = d.toLocaleDateString("uk-UA", { weekday: "long" });
-    const label = i === 0 ? "Сьогодні" : i === 1 ? "Завтра" : cap(wd);
-    const dateLabel = d.toLocaleDateString("uk-UA", {
-      day: "numeric",
-      month: "short",
-    });
-    return { iso, label, dateLabel };
-  });
-}
-
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// Локальна дата → "YYYY-MM-DD" (без UTC-зсуву, щоб збігалося з scheduledDate).
+function isoLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 // ---- дрібні хелпери ----
@@ -283,6 +269,9 @@ export default function Home() {
   const [replanText, setReplanText] = useState("");
   const [replanLoading, setReplanLoading] = useState(false);
   const [replanError, setReplanError] = useState<string | null>(null);
+  // Календар: зсув місяця від поточного (0 = цей місяць) і обраний день.
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr());
   const [toast, setToast] = useState<{
     message: string;
     action?: { label: string; fn: () => void };
@@ -324,20 +313,18 @@ export default function Home() {
     [tasks, detailId]
   );
 
-  const week = useMemo(() => buildWeek(), []);
-  const tasksByDay = useMemo(() => {
+  // Календар: усі задачі по датах (для крапок/лічильників у сітці місяця).
+  const tasksByDate = useMemo(() => {
     const map: Record<string, Task[]> = {};
-    for (const d of week) map[d.iso] = [];
     for (const t of tasks) {
-      if (t.scheduledDate && map[t.scheduledDate]) {
-        map[t.scheduledDate].push(t);
-      }
+      if (!t.scheduledDate) continue;
+      (map[t.scheduledDate] ??= []).push(t);
     }
     for (const iso of Object.keys(map)) map[iso] = sortTasks(map[iso]);
     return map;
-  }, [tasks, week]);
+  }, [tasks]);
 
-  // Налаштування робочого дня → опції планувальника (спільні для Today і Week).
+  // Налаштування робочого дня → опції планувальника (спільні для Today і Calendar).
   const workOpts: WorkdayOptions = useMemo(
     () => ({ dayStart: toMin(settings.dayStart), dayEnd: toMin(settings.dayEnd) }),
     [settings.dayStart, settings.dayEnd]
@@ -462,7 +449,7 @@ export default function Home() {
             : ""),
         action: { label: "Скасувати", fn: () => removeMany(ids) },
       });
-      setTab(landedToday > 0 ? "today" : hasFuture ? "week" : "inbox");
+      setTab(landedToday > 0 ? "today" : hasFuture ? "calendar" : "inbox");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Щось пішло не так.");
     } finally {
@@ -543,8 +530,8 @@ export default function Home() {
           <h1>
             {tab === "today"
               ? "Сьогодні"
-              : tab === "week"
-              ? "Наступні 7 днів"
+              : tab === "calendar"
+              ? "Календар"
               : "Незаплановане"}
           </h1>
           <div className="date">{dateLabel}</div>
@@ -590,14 +577,16 @@ export default function Home() {
             onClearBusy={clearBusy}
             onExport={handleExport}
           />
-        ) : tab === "week" ? (
-          <WeekView
-            week={week}
-            tasksByDay={tasksByDay}
+        ) : tab === "calendar" ? (
+          <CalendarView
+            tasksByDate={tasksByDate}
             workOpts={workOpts}
+            monthOffset={monthOffset}
+            setMonthOffset={setMonthOffset}
+            selectedDate={selectedDate}
+            setSelectedDate={setSelectedDate}
             onToggle={toggleDone}
             onRemove={handleRemove}
-            onMove={moveToDate}
             onOpen={setDetailId}
           />
         ) : (
@@ -625,12 +614,12 @@ export default function Home() {
           Сьогодні
         </button>
         <button
-          className={`tab ${tab === "week" ? "active" : ""}`}
-          onClick={() => setTab("week")}
+          className={`tab ${tab === "calendar" ? "active" : ""}`}
+          onClick={() => setTab("calendar")}
           type="button"
         >
-          <TabIcon kind="week" />
-          Тиждень
+          <TabIcon kind="calendar" />
+          Календар
         </button>
         <button
           className={`tab ${tab === "inbox" ? "active" : ""}`}
@@ -1001,6 +990,25 @@ function TaskDetail(props: {
             ))}
           </div>
 
+          <div className="detail-label">День</div>
+          <input
+            type="date"
+            className="detail-input"
+            value={t.scheduledDate ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              onUpdate(
+                v
+                  ? {
+                      scheduledDate: v,
+                      status: t.status === "done" ? "done" : "planned",
+                    }
+                  : { scheduledDate: null, status: "inbox" }
+              );
+            }}
+            aria-label="День задачі"
+          />
+
           <div className="detail-grid">
             <div>
               <div className="detail-label">Час початку</div>
@@ -1360,170 +1368,161 @@ function InboxView(props: {
   );
 }
 
-// ---- Week ----
-function WeekView(props: {
-  week: WeekDay[];
-  tasksByDay: Record<string, Task[]>;
+// ---- Календар (місячна сітка + план обраного дня) ----
+const WEEKDAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
+
+function CalendarView(props: {
+  tasksByDate: Record<string, Task[]>;
   workOpts: WorkdayOptions;
+  monthOffset: number;
+  setMonthOffset: (n: number) => void;
+  selectedDate: string;
+  setSelectedDate: (iso: string) => void;
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
-  onMove: (id: string, date: string) => void;
   onOpen: (id: string) => void;
 }) {
-  const { week, tasksByDay, workOpts, onToggle, onRemove, onMove, onOpen } = props;
-  const total = week.reduce((s, d) => s + tasksByDay[d.iso].length, 0);
+  const {
+    tasksByDate,
+    workOpts,
+    monthOffset,
+    setMonthOffset,
+    selectedDate,
+    setSelectedDate,
+    onToggle,
+    onRemove,
+    onOpen,
+  } = props;
+  const today = todayStr();
 
-  if (total === 0) {
-    return (
-      <div className="empty">
-        <div className="big">🗓️</div>
-        <div className="t">Тиждень порожній</div>
-        <div className="s">
-          Заплануй задачі на сьогодні або признач їх на потрібний день.
-        </div>
-      </div>
-    );
+  // Місяць, що показуємо (0 = поточний).
+  const now = new Date();
+  const view = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const year = view.getFullYear();
+  const month = view.getMonth();
+  const monthTitle = cap(
+    view.toLocaleDateString("uk-UA", { month: "long", year: "numeric" })
+  );
+
+  // Сітка 6×7, тиждень із понеділка (включно з «хвостами» сусідніх місяців).
+  const firstWeekday = (view.getDay() + 6) % 7;
+  const gridStart = new Date(year, month, 1 - firstWeekday);
+  const cells = Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(gridStart);
+    d.setDate(gridStart.getDate() + i);
+    return d;
+  });
+
+  // План обраного дня — той самий таймлайн «за енергією», що й на Сьогодні.
+  const dayList = tasksByDate[selectedDate] ?? [];
+  const doneTasks = dayList.filter((t) => t.status === "done");
+  const activeTasks = dayList.filter((t) => t.status !== "done");
+  const tl = buildTimeline(activeTasks, [], workOpts);
+  const scheduled = tl.slots.filter((s) => !s.overflow);
+  const timeMap = new Map<string, { label: string; fixed: boolean }>();
+  for (const s of scheduled) {
+    timeMap.set(s.task.id, {
+      label: `${fmtTime(s.startMin)}–${fmtTime(s.endMin)}`,
+      fixed: s.fixed,
+    });
   }
+  const overflowIds = new Set(tl.overflow.map((s) => s.task.id));
+  const ordered = [
+    ...scheduled.map((s) => s.task),
+    ...tl.overflow.map((s) => s.task),
+    ...doneTasks,
+  ];
+  const selLabel = cap(
+    new Date(selectedDate + "T00:00:00").toLocaleDateString("uk-UA", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+    })
+  );
 
   return (
     <>
-      <div className="summary">Розклад на 7 днів. Задачі можна переносити між днями.</div>
-      {week.map((day) => {
-        const list = tasksByDay[day.iso];
-        const doneTasks = list.filter((t) => t.status === "done");
-        const activeTasks = list.filter((t) => t.status !== "done");
-        // Той самий таймлайн «за енергією», що й на Сьогодні — з годинами.
-        const tl = buildTimeline(activeTasks, [], workOpts);
-        const scheduled = tl.slots.filter((s) => !s.overflow);
-        const timeMap = new Map<string, { label: string; fixed: boolean }>();
-        for (const s of scheduled) {
-          timeMap.set(s.task.id, {
-            label: `${fmtTime(s.startMin)}–${fmtTime(s.endMin)}`,
-            fixed: s.fixed,
-          });
-        }
-        const overflowIds = new Set(tl.overflow.map((s) => s.task.id));
-        // Порядок: заплановані за часом → поза межами дня → виконані.
-        const ordered = [
-          ...scheduled.map((s) => s.task),
-          ...tl.overflow.map((s) => s.task),
-          ...doneTasks,
-        ];
-        const mins = tl.plannedMinutes;
-        return (
-          <div key={day.iso} className="week-day">
-            <div className="week-day-head">
-              <span>
-                {day.label} <span className="wd-date">· {day.dateLabel}</span>
-              </span>
-              {list.length > 0 && (
-                <span className="wd-count">
-                  {list.length}
-                  {mins > 0 ? ` · ~${fmtMinutes(mins)}` : ""}
+      <div className="cal-head">
+        <button
+          className="cal-nav"
+          type="button"
+          onClick={() => setMonthOffset(monthOffset - 1)}
+          aria-label="Попередній місяць"
+        >
+          ‹
+        </button>
+        <div className="cal-title">{monthTitle}</div>
+        <button
+          className="cal-nav"
+          type="button"
+          onClick={() => setMonthOffset(monthOffset + 1)}
+          aria-label="Наступний місяць"
+        >
+          ›
+        </button>
+      </div>
+
+      <div className="cal-weekdays">
+        {WEEKDAY_LABELS.map((w) => (
+          <span key={w}>{w}</span>
+        ))}
+      </div>
+
+      <div className="cal-grid">
+        {cells.map((d, i) => {
+          const iso = isoLocal(d);
+          const inMonth = d.getMonth() === month;
+          const dayTasks = (tasksByDate[iso] ?? []).filter(
+            (t) => t.status !== "done"
+          );
+          const isToday = iso === today;
+          const isSel = iso === selectedDate;
+          return (
+            <button
+              key={i}
+              type="button"
+              className={`cal-cell ${inMonth ? "" : "out"} ${
+                isToday ? "today" : ""
+              } ${isSel ? "sel" : ""}`}
+              onClick={() => setSelectedDate(iso)}
+              aria-label={`${d.getDate()}, задач: ${dayTasks.length}`}
+            >
+              <span className="cal-num">{d.getDate()}</span>
+              {dayTasks.length > 0 && (
+                <span className="cal-dots">
+                  {dayTasks.slice(0, 3).map((t) => (
+                    <span
+                      key={t.id}
+                      className={`cal-dot p${t.priority <= 3 ? t.priority : 4}`}
+                    />
+                  ))}
                 </span>
               )}
-            </div>
-            {list.length === 0 ? (
-              <div className="week-empty">Вільно</div>
-            ) : (
-              ordered.map((t) => (
-                <WeekTaskRow
-                  key={t.id}
-                  task={t}
-                  week={week}
-                  timeLabel={timeMap.get(t.id)?.label}
-                  fixed={timeMap.get(t.id)?.fixed}
-                  overflow={overflowIds.has(t.id)}
-                  onToggle={onToggle}
-                  onRemove={onRemove}
-                  onMove={onMove}
-                  onOpen={onOpen}
-                />
-              ))
-            )}
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
-function WeekTaskRow(props: {
-  task: Task;
-  week: WeekDay[];
-  timeLabel?: string;
-  fixed?: boolean;
-  overflow?: boolean;
-  onToggle: (id: string) => void;
-  onRemove: (id: string) => void;
-  onMove: (id: string, date: string) => void;
-  onOpen: (id: string) => void;
-}) {
-  const { task: t, week, timeLabel, fixed, overflow, onToggle, onRemove, onMove, onOpen } =
-    props;
-  const done = t.status === "done";
-  const pClass = t.priority <= 3 ? `p${t.priority}` : "";
-  const subDone = t.subtasks.filter((s) => s.done).length;
-  return (
-    <SwipeToDelete id={t.id} onDelete={() => onRemove(t.id)}>
-      <div className={`task week-task ${done ? "completed" : ""} ${overflow ? "is-overflow" : ""}`}>
-        <button
-          className={`checkbox ${done ? "done" : pClass}`}
-          onClick={() => onToggle(t.id)}
-          aria-label={done ? "Позначити невиконаною" : "Виконати"}
-          type="button"
-        >
-          {done && <Check />}
-        </button>
-        <button
-          className="task-body"
-          type="button"
-          onClick={() => onOpen(t.id)}
-          aria-label={`Відкрити «${t.title}»`}
-        >
-          {(timeLabel || overflow) && (
-            <div className={`task-time ${fixed ? "fixed" : ""}`}>
-              {overflow ? "⚠ бракує часу 😔" : fixed ? `📌 ${timeLabel}` : timeLabel}
-            </div>
-          )}
-          <div className="task-title">{t.title}</div>
-          <div className="task-meta">
-            {t.priority <= 3 && (
-              <span className={`meta-chip p${t.priority}`}>
-                Пріоритетність: {PRIORITY_META[t.priority as Priority].short}
-              </span>
-            )}
-            {t.estimateMinutes != null && (
-              <span className="meta-chip">🕐 {fmtMinutes(t.estimateMinutes)}</span>
-            )}
-            {t.subtasks.length > 0 && (
-              <span className="meta-chip">
-                ☑ {subDone}/{t.subtasks.length}
-              </span>
-            )}
-            {t.tags.map((tag) => (
-              <span className="tag" key={tag}>
-                #{tag}
-              </span>
-            ))}
-          </div>
-        </button>
-        <div className="task-side">
-          <select
-            className="day-select"
-            value={t.scheduledDate ?? ""}
-            onChange={(e) => onMove(t.id, e.target.value)}
-            aria-label="Перенести на день"
-          >
-            {week.map((d) => (
-              <option key={d.iso} value={d.iso}>
-                {d.label}
-              </option>
-            ))}
-          </select>
-        </div>
+            </button>
+          );
+        })}
       </div>
-    </SwipeToDelete>
+
+      <div className="section-title cal-day-title">{selLabel}</div>
+      {ordered.length === 0 ? (
+        <div className="cal-day-empty">
+          Нічого не заплановано. Тапни «＋ Записати», щоб додати.
+        </div>
+      ) : (
+        ordered.map((t) => (
+          <TaskRow
+            key={t.id}
+            task={t}
+            timeLabel={timeMap.get(t.id)?.label}
+            fixed={timeMap.get(t.id)?.fixed}
+            overflow={overflowIds.has(t.id)}
+            onToggle={onToggle}
+            onRemove={onRemove}
+            onOpen={onOpen}
+          />
+        ))
+      )}
+    </>
   );
 }
 
@@ -1622,7 +1621,7 @@ function TaskRow(props: {
   );
 }
 
-function TabIcon({ kind }: { kind: "today" | "week" | "inbox" }) {
+function TabIcon({ kind }: { kind: "today" | "calendar" | "inbox" }) {
   if (kind === "today")
     return (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
@@ -1644,7 +1643,7 @@ function TabIcon({ kind }: { kind: "today" | "week" | "inbox" }) {
         <rect x="6.5" y="12" width="4" height="4" rx="1" fill="currentColor" />
       </svg>
     );
-  if (kind === "week")
+  if (kind === "calendar")
     return (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
         <rect
