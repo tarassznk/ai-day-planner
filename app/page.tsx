@@ -20,8 +20,9 @@ import {
   type Timeline,
   type BusyBlock,
   type WorkdayOptions,
+  type Slot,
 } from "@/lib/schedule";
-import { downloadIcs } from "@/lib/ics";
+import { downloadIcs, downloadMonthIcs } from "@/lib/ics";
 import { plural } from "@/lib/text";
 import {
   PRIORITY_META,
@@ -533,6 +534,35 @@ export default function Home() {
     });
   }
 
+  // Експорт усього поточного (відкритого в Календарі) місяця у .ics.
+  function handleExportMonth() {
+    const now = new Date();
+    const view = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+    const year = view.getFullYear();
+    const month = view.getMonth(); // 0-based
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const days: Array<{ dateIso: string; slots: Slot[] }> = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateIso = isoLocal(new Date(year, month, d));
+      const dayTasks = (tasksByDate[dateIso] ?? []).filter(
+        (t) => t.status !== "done"
+      );
+      if (dayTasks.length === 0) continue;
+      // Той самий таймлайн «за енергією», що й на Сьогодні (без сесійних
+      // обмежень busy — вони стосуються лише поточного дня).
+      const tl = buildTimeline(dayTasks, [], workOpts);
+      days.push({ dateIso, slots: tl.slots });
+    }
+    const monthLabel = `${year}-${String(month + 1).padStart(2, "0")}`;
+    const n = downloadMonthIcs(days, monthLabel);
+    setToast({
+      message:
+        n > 0
+          ? `Експортовано ${n} ${plural(n, "подію", "події", "подій")} за місяць у файл .ics.`
+          : "У цьому місяці немає запланованих задач для експорту.",
+    });
+  }
+
   function handleCarryOver() {
     const n = carryOverToTomorrow();
     if (n > 0)
@@ -613,6 +643,7 @@ export default function Home() {
             onToggle={toggleDone}
             onRemove={handleRemove}
             onOpen={setDetailId}
+            onExportMonth={handleExportMonth}
           />
         ) : (
           <InboxView
@@ -1406,6 +1437,7 @@ function CalendarView(props: {
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
   onOpen: (id: string) => void;
+  onExportMonth: () => void;
 }) {
   const {
     tasksByDate,
@@ -1417,6 +1449,7 @@ function CalendarView(props: {
     onToggle,
     onRemove,
     onOpen,
+    onExportMonth,
   } = props;
   const today = todayStr();
 
@@ -1463,6 +1496,15 @@ function CalendarView(props: {
       day: "numeric",
       month: "long",
     })
+  );
+
+  // Чи є в цьому місяці бодай одна активна задача — щоб не показувати
+  // кнопку експорту на порожньому місяці.
+  const monthPrefix = `${year}-${String(month + 1).padStart(2, "0")}`;
+  const monthHasTasks = Object.keys(tasksByDate).some(
+    (iso) =>
+      iso.startsWith(monthPrefix) &&
+      tasksByDate[iso].some((t) => t.status !== "done")
   );
 
   return (
@@ -1546,6 +1588,12 @@ function CalendarView(props: {
             onOpen={onOpen}
           />
         ))
+      )}
+
+      {monthHasTasks && (
+        <button type="button" className="export-btn" onClick={onExportMonth}>
+          📅 Експортувати місяць у календар (.ics)
+        </button>
       )}
     </>
   );

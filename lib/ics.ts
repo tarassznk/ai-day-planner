@@ -1,12 +1,21 @@
-// Локальний експорт плану дня у файл .ics (iCalendar). БЕЗ мережі й OAuth —
+// Локальний експорт плану у файл .ics (iCalendar). БЕЗ мережі й OAuth —
 // надійний «фінальний акорд» для демо: користувач вивантажує план у будь-який
-// календар (Google/Apple/Outlook) одним тапом.
+// календар (Google/Apple/Outlook) одним тапом. Підтримує як один день
+// (Сьогодні), так і цілий місяць (Календар) — кожна подія несе власну дату.
 
 import type { Task } from "./types";
+
+interface IcsSlot {
+  startMin: number;
+  endMin: number;
+  overflow: boolean;
+  task: Task;
+}
 
 interface IcsEvent {
   id: string;
   title: string;
+  dateIso: string; // "YYYY-MM-DD" — на який день ця подія
   startMin: number;
   endMin: number;
   task: Task;
@@ -28,8 +37,8 @@ function stamp(dateIso: string, min: number): string {
   return `${d}T${h}${m}00`;
 }
 
-export function buildIcs(events: IcsEvent[], dateIso: string): string {
-  const dtstamp = stamp(dateIso, 0);
+export function buildIcs(events: IcsEvent[]): string {
+  const dtstamp = stamp(events[0]?.dateIso ?? "1970-01-01", 0);
   const lines: string[] = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
@@ -47,10 +56,12 @@ export function buildIcs(events: IcsEvent[], dateIso: string): string {
     }
     lines.push(
       "BEGIN:VEVENT",
-      `UID:${e.id}@ai-day-planner`,
+      // UID унікальний по (задача + день) — задача живе на одному дні,
+      // але дата в UID страхує від колізій між днями у місячному експорті.
+      `UID:${e.id}-${e.dateIso}@ai-day-planner`,
       `DTSTAMP:${dtstamp}`,
-      `DTSTART:${stamp(dateIso, e.startMin)}`,
-      `DTEND:${stamp(dateIso, e.endMin)}`,
+      `DTSTART:${stamp(e.dateIso, e.startMin)}`,
+      `DTEND:${stamp(e.dateIso, e.endMin)}`,
       `SUMMARY:${esc(e.title)}`
     );
     if (descParts.length > 0) {
@@ -62,31 +73,48 @@ export function buildIcs(events: IcsEvent[], dateIso: string): string {
   return lines.join("\r\n");
 }
 
-// Зібрати .ics із запланованих (не-overflow) слотів і завантажити файл.
-export function downloadIcs(
-  slots: Array<{ startMin: number; endMin: number; overflow: boolean; task: Task }>,
-  dateIso: string
-): number {
-  const events: IcsEvent[] = slots
+// Запланований (не-overflow) слот → подія на вказаний день.
+function eventsFromSlots(slots: IcsSlot[], dateIso: string): IcsEvent[] {
+  return slots
     .filter((s) => !s.overflow && s.startMin >= 0)
     .map((s) => ({
       id: s.task.id,
       title: s.task.title,
+      dateIso,
       startMin: s.startMin,
       endMin: s.endMin,
       task: s.task,
     }));
-  if (events.length === 0) return 0;
+}
 
-  const ics = buildIcs(events, dateIso);
+function triggerDownload(ics: string, filename: string): void {
   const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `plan-${dateIso}.ics`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// Експорт плану ОДНОГО дня (вкладка «Сьогодні»).
+export function downloadIcs(slots: IcsSlot[], dateIso: string): number {
+  const events = eventsFromSlots(slots, dateIso);
+  if (events.length === 0) return 0;
+  triggerDownload(buildIcs(events), `plan-${dateIso}.ics`);
+  return events.length;
+}
+
+// Експорт плану цілого МІСЯЦЯ (вкладка «Календар»): по слоту на кожен день.
+// monthLabel — для назви файлу, напр. "2026-07".
+export function downloadMonthIcs(
+  days: Array<{ dateIso: string; slots: IcsSlot[] }>,
+  monthLabel: string
+): number {
+  const events = days.flatMap((d) => eventsFromSlots(d.slots, d.dateIso));
+  if (events.length === 0) return 0;
+  triggerDownload(buildIcs(events), `plan-${monthLabel}.ics`);
   return events.length;
 }
