@@ -380,7 +380,12 @@ export default function Home() {
     [todayActive, busyBlocks, workOpts]
   );
   const plannedMinutes = timeline.plannedMinutes;
-  const overloaded = timeline.overflow.length > 0;
+  // Перевантаження: або гнучкі задачі не влізли в проміжки (overflow), АБО
+  // сумарний час задач (враховуючи фіксовані за часом!) перевищує місткість
+  // дня. Друга умова ловить випадок, коли одна фіксована задача (напр. довга
+  // зустріч) виходить за межі короткого робочого дня — overflow для таких = 0.
+  const overloaded =
+    timeline.overflow.length > 0 || plannedMinutes > workLabel.minutes;
 
   // Нагадування про невиконані пріоритетні (P1)
   const unfinishedP1 = todayActive.filter((t) => t.priority === 1);
@@ -636,6 +641,7 @@ export default function Home() {
           <CalendarView
             tasksByDate={tasksByDate}
             workOpts={workOpts}
+            workLabel={workLabel}
             monthOffset={monthOffset}
             setMonthOffset={setMonthOffset}
             selectedDate={selectedDate}
@@ -1279,9 +1285,10 @@ function TodayView(props: {
           <span>⚖️</span>
           <span>
             Заплановано ~{fmtMinutes(plannedMinutes)}, а робочий день —{" "}
-            {workLabel.range} (~{fmtMinutes(workLabel.minutes)}). {overflow.length}{" "}
-            {plural(overflow.length, "задача не вміщується", "задачі не вміщуються", "задач не вміщуються")}
-            . Перенеси нижче виділені на завтра.
+            {workLabel.range} (~{fmtMinutes(workLabel.minutes)}).{" "}
+            {overflow.length > 0
+              ? `${overflow.length} ${plural(overflow.length, "задача не вміщується", "задачі не вміщуються", "задач не вміщуються")}. Перенеси нижче виділені на завтра.`
+              : "Задачі не вміщуються в робочий день — скороти список або розшир межі дня."}
           </span>
         </div>
       )}
@@ -1430,6 +1437,7 @@ const WEEKDAY_LABELS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 function CalendarView(props: {
   tasksByDate: Record<string, Task[]>;
   workOpts: WorkdayOptions;
+  workLabel: { minutes: number; range: string };
   monthOffset: number;
   setMonthOffset: (n: number) => void;
   selectedDate: string;
@@ -1442,6 +1450,7 @@ function CalendarView(props: {
   const {
     tasksByDate,
     workOpts,
+    workLabel,
     monthOffset,
     setMonthOffset,
     selectedDate,
@@ -1571,6 +1580,18 @@ function CalendarView(props: {
       </div>
 
       <div className="section-title cal-day-title">{selLabel}</div>
+      {(tl.overflow.length > 0 || tl.plannedMinutes > workLabel.minutes) && (
+        <div className="banner warn">
+          <span>⚖️</span>
+          <span>
+            Заплановано ~{fmtMinutes(tl.plannedMinutes)}, а робочий день —{" "}
+            {workLabel.range} (~{fmtMinutes(workLabel.minutes)}).{" "}
+            {tl.overflow.length > 0
+              ? `${tl.overflow.length} ${plural(tl.overflow.length, "задача не вміщується", "задачі не вміщуються", "задач не вміщуються")}. Познач нижче виділені або перенеси на інший день.`
+              : "Задачі не вміщуються в робочий день — скороти список або розшир межі дня."}
+          </span>
+        </div>
+      )}
       {ordered.length === 0 ? (
         <div className="cal-day-empty">
           Нічого не заплановано. Тапни «＋ Записати», щоб додати.
